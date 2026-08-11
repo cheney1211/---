@@ -7,7 +7,7 @@ followed by the final complete AgentMessage.
 
 from __future__ import annotations
 
-from typing import Iterable
+from typing import AsyncIterable, Iterable
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -94,28 +94,31 @@ def build_provider(
         temperature=temperature,
     ) if not stream else None  # graph not needed for streaming path
 
-    def provider(state: AgentState) -> Iterable[AgentMessage]:
+    def provider(state: AgentState) -> AsyncIterable[AgentMessage]:
         lc_messages = _to_lc_messages(state.messages, system_message=system_message)
 
-        if stream:
-            # -- streaming path: token-level via ChatOpenAI.stream() ---------
-            full_text_parts: list[str] = []
-            for chunk in llm.stream(lc_messages):
-                token = chunk.content or ""
-                if token:
-                    full_text_parts.append(token)
-                    yield AgentMessage(
-                        role="assistant",
-                        content=token,
-                        metadata={"chunk": True},
-                    )
-            # Final complete message (stored in state by the loop)
-            yield AgentMessage(role="assistant", content="".join(full_text_parts))
-        else:
-            # -- non-streaming path: via LangGraph graph ---------------------
-            assert app is not None
-            result = app.invoke({"messages": lc_messages})
-            ai_msg: AIMessage = result["messages"][-1]
-            yield AgentMessage(role="assistant", content=ai_msg.content)
+        async def _iterate():
+            if stream:
+                # -- streaming path: token-level via ChatOpenAI.astream() ---
+                full_text_parts: list[str] = []
+                async for chunk in llm.astream(lc_messages):
+                    token = chunk.content or ""
+                    if token:
+                        full_text_parts.append(token)
+                        yield AgentMessage(
+                            role="assistant",
+                            content=token,
+                            metadata={"chunk": True},
+                        )
+                # Final complete message (stored in state by the loop)
+                yield AgentMessage(role="assistant", content="".join(full_text_parts))
+            else:
+                # -- non-streaming path: async via LangGraph graph ----------
+                assert app is not None
+                result = await app.ainvoke({"messages": lc_messages})
+                ai_msg: AIMessage = result["messages"][-1]
+                yield AgentMessage(role="assistant", content=ai_msg.content)
+
+        return _iterate()
 
     return provider

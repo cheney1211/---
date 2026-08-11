@@ -1,13 +1,18 @@
 ﻿from __future__ import annotations
 
-from typing import Callable, Iterable, List, Protocol
+import inspect
+from typing import AsyncIterable, Callable, Iterable, List, Protocol
 
 from .core import AgentMessage, AgentRunState, AgentState
 
 
 class MessageProvider(Protocol):
-    """Callable that receives current state and yields AgentMessage objects."""
-    def __call__(self, state: AgentState) -> Iterable[AgentMessage]: ...
+    """Callable that receives current state and yields AgentMessage objects.
+
+    Implementations may return either a synchronous Iterable or an
+    AsyncIterable (e.g. an async generator).
+    """
+    def __call__(self, state: AgentState) -> Iterable[AgentMessage] | AsyncIterable[AgentMessage]: ...
 
 
 # Callback type: called for every message yielded by the provider.
@@ -55,7 +60,16 @@ class AgentLoop:
 
             state.turns += 1
             saw_assistant_message = False
-            for new_message in self.provider(state):
+            new_messages = self.provider(state)
+
+            if inspect.isawaitable(new_messages) or hasattr(new_messages, "__aiter__"):
+                raise TypeError(
+                    "AgentLoop.run received an async MessageProvider. "
+                    "Use the async runner path (e.g. app.create_background_task) "
+                    "or keep run_in_executor around a sync adapter."
+                )
+
+            for new_message in new_messages:
                 is_chunk = new_message.metadata.get("chunk", False)
 
                 # Streaming chunks: notify display layer but do NOT persist.
@@ -74,6 +88,77 @@ class AgentLoop:
                 if new_message.is_stop() or self._is_stop_candidate(new_message):
                     state.status = AgentRunState.FINISHED
                     break
+
+            if state.status == AgentRunState.FINISHED:
+                break
+            if should_stop_after_assistant and saw_assistant_message:
+                state.status = AgentRunState.FINISHED
+                break
+
+        return state
+
+    async def arun(
+        self,
+        *,
+        seed_messages: List[AgentMessage] | None = None,
+        state: AgentState | None = None,
+        continue_after_assistant: bool = False,
+        on_message: OnMessageCallback | None = None,
+    ) -> AgentState:
+        state = state or AgentState()
+        if seed_messages:
+            state.extend_messages(seed_messages)
+
+        should_stop_after_assistant = self.stop_after_assistant and not continue_after_assistant
+
+        while state.status == AgentRunState.RUNNING:
+            if state.turns >= self.max_turns:
+                state.status = AgentRunState.FINISHED
+                break
+
+            state.turns += 1
+            saw_assistant_message = False
+            new_messages = self.provider(state)
+
+            if inspect.isawaitable(new_messages):
+                new_messages = await new_messages
+
+            if hasattr(new_messages, "__aiter__"):
+                async for new_message in new_messages:  # type: ignore[union-attr]
+                    is_chunk = new_message.metadata.get("chunk", False)
+
+                    if is_chunk:
+                        if on_message:
+                            on_message(new_message)
+                        continue
+
+                    state.append(new_message)
+                    if on_message:
+                        on_message(new_message)
+
+                    if new_message.role == "assistant":
+                        saw_assistant_message = True
+                    if new_message.is_stop() or self._is_stop_candidate(new_message):
+                        state.status = AgentRunState.FINISHED
+                        break
+            else:
+                for new_message in new_messages:  # type: ignore[assignment]
+                    is_chunk = new_message.metadata.get("chunk", False)
+
+                    if is_chunk:
+                        if on_message:
+                            on_message(new_message)
+                        continue
+
+                    state.append(new_message)
+                    if on_message:
+                        on_message(new_message)
+
+                    if new_message.role == "assistant":
+                        saw_assistant_message = True
+                    if new_message.is_stop() or self._is_stop_candidate(new_message):
+                        state.status = AgentRunState.FINISHED
+                        break
 
             if state.status == AgentRunState.FINISHED:
                 break

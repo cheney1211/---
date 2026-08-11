@@ -8,6 +8,7 @@ from typing import List
 import os
 
 from .core import AgentMessage, AgentState, AgentRunState
+import inspect
 from .loop import AgentLoop, OnMessageCallback, MessageProvider
 
 from prompt_toolkit import Application
@@ -70,6 +71,26 @@ class AgentRunner:
             if message.role == "assistant":
                 return message.content
         return None
+
+    def _is_async_provider(self) -> bool:
+        provider = self.provider
+        try:
+            sample = provider(self._state)
+        except Exception:
+            # Conservative: assume sync when provider cannot be sampled.
+            return False
+        return inspect.isawaitable(sample) or hasattr(sample, "__aiter__")
+
+    async def acreate_state(self, user_message=None, on_message=None):
+        seed_messages = []
+        if user_message:
+            seed_messages.append(AgentMessage(role="user", content=user_message))
+        return await self._loop.arun(seed_messages=seed_messages, on_message=on_message)
+
+    async def acontinue_state(self, state, user_message, on_message=None):
+        state.append(AgentMessage(role="user", content=user_message))
+        state.status = AgentRunState.RUNNING
+        return await self._loop.arun(state=state, continue_after_assistant=False, on_message=on_message)
 
     def run_cli(self, *, first_message=None):
         chat_fragments = []
@@ -161,9 +182,12 @@ class AgentRunner:
                 chat_fragments.append(('', f'{first_message}\n'))
                 app.invalidate()
                 on_msg = make_on_message()
-                state = await asyncio.get_running_loop().run_in_executor(
-                    None, lambda: self.create_state(first_message, on_message=on_msg)
-                )
+                if self._is_async_provider():
+                    state = await self.acreate_state(first_message, on_message=on_msg)
+                else:
+                    state = await asyncio.get_running_loop().run_in_executor(
+                        None, lambda: self.create_state(first_message, on_message=on_msg)
+                    )
                 if not self.config.stream:
                     reply = self._last_assistant_message(state)
                     if reply:
@@ -203,10 +227,13 @@ class AgentRunner:
 
                 on_msg = make_on_message()
 
-                def process():
-                    return self.continue_state(state, text, on_message=on_msg)
+                if self._is_async_provider():
+                    state = await self.acontinue_state(state, text, on_message=on_msg)
+                else:
+                    def process():
+                        return self.continue_state(state, text, on_message=on_msg)
 
-                state = await asyncio.get_running_loop().run_in_executor(None, process)
+                    state = await asyncio.get_running_loop().run_in_executor(None, process)
 
                 if not self.config.stream:
                     reply = self._last_assistant_message(state)
