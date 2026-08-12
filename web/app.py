@@ -1,15 +1,13 @@
-"""FastAPI application for the chat web interface."""
+﻿"""FastAPI application for the chat web interface."""
 
 from __future__ import annotations
 
 import os
-import uuid
 from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 from .routes import router as chat_router
 
@@ -20,18 +18,20 @@ load_dotenv(_ROOT / ".env")
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
-    app = FastAPI(title="小助手", version="0.1.0")
+    app = FastAPI(title="xiaozhushou", version="0.2.0")
+
+    # CORS: allow Next.js dev server and common local ports
+    # Use permissive settings for local development to avoid preflight failures.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     # Register API routes
     app.include_router(chat_router, prefix="/api")
-
-    # Serve static files (frontend)
-    _static = Path(__file__).resolve().parent / "static"
-    app.mount("/static", StaticFiles(directory=str(_static)), name="static")
-
-    @app.get("/")
-    async def index():
-        return FileResponse(str(_static / "index.html"))
 
     return app
 

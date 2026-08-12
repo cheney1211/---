@@ -1,8 +1,11 @@
-"""API routes for the chat web interface.
+﻿"""API routes for the chat web interface.
 
 Provides:
-  - POST /api/chat          – non-streaming REST endpoint
-  - WS   /api/ws/chat       – WebSocket streaming endpoint
+  - GET  /api/health         -- health check
+  - POST /api/chat           -- non-streaming REST endpoint
+  - POST /api/chat/stream    -- SSE streaming endpoint
+  - GET  /api/session/{id}/history -- get session history
+  - DELETE /api/session/{id} -- delete session
 """
 
 from __future__ import annotations
@@ -10,21 +13,24 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from typing import Dict
+from typing import Dict, List
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter
 from pydantic import BaseModel
+from sse_starlette.sse import EventSourceResponse
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
-from assistant.core import AgentMessage, AgentRunState, AgentState
-from assistant.loop import AgentLoop
-from assistant.providers.langgraph_openai import build_provider
+from assistant.core import AgentMessage, AgentState
 
 router = APIRouter()
 
 _sessions: Dict[str, AgentState] = {}
 
+
+# ---------------------------------------------------------------------------
+# Request / Response models
+# ---------------------------------------------------------------------------
 
 class ChatRequest(BaseModel):
     message: str
@@ -36,6 +42,21 @@ class ChatResponse(BaseModel):
     session_id: str
 
 
+class MessageOut(BaseModel):
+    role: str
+    content: str
+
+
+class SessionHistory(BaseModel):
+    session_id: str
+    messages: List[MessageOut]
+    turns: int
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
 def _get_or_create_session(session_id: str | None = None) -> tuple[str, AgentState]:
     if session_id and session_id in _sessions:
         return session_id, _sessions[session_id]
@@ -46,7 +67,6 @@ def _get_or_create_session(session_id: str | None = None) -> tuple[str, AgentSta
 
 
 def _require_env() -> dict:
-    """Return LLM config from environment."""
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not set")
@@ -72,10 +92,19 @@ def _to_lc_messages(messages: list[AgentMessage], system_message: str) -> list:
 
 
 def _build_llm(api_key: str, model: str, base_url: str | None) -> ChatOpenAI:
-    kw = {"model": model, "api_key": api_key, "temperature": 0.7}
+    kw = {"model": model, "api_key": api_key, "temperature": 0.7, "streaming": True}
     if base_url:
         kw["base_url"] = base_url
     return ChatOpenAI(**kw)
+
+
+# ---------------------------------------------------------------------------
+# REST endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/health")
+async def health():
+    return {"status": "ok"}
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -98,72 +127,102 @@ async def chat(request: ChatRequest):
     return ChatResponse(reply=reply, session_id=session_id)
 
 
-@router.websocket("/ws/chat")
-async def ws_chat(websocket: WebSocket):
-    """WebSocket endpoint for streaming chat.
+@router.post("/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """SSE streaming endpoint using astream_events for rich status + token streaming.
 
-    Protocol (JSON):
-      Client -> Server: {"type":"message","content":"...","session_id":"...?"}
-      Server -> Client: {"type":"session","session_id":"..."}
-      Server -> Client: {"type":"chunk","content":"..."}
-      Server -> Client: {"type":"done","content":"full response"}
-      Server -> Client: {"type":"error","content":"..."}
+    Event types:
+      - event: session  -> {"session_id": "..."}
+      - event: status   -> {"status": "thinking" | "tool_start" | "tool_end" | ...}
+      - event: chunk    -> {"content": "token text"}
+      - event: done     -> {"content": "full text", "session_id": "..."}
     """
     cfg = _require_env()
-    await websocket.accept()
-    session_id: str | None = None
+    session_id, state = _get_or_create_session(request.session_id)
 
-    try:
-        while True:
-            raw = await websocket.receive_text()
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError:
-                await websocket.send_json(
-                    {"type": "error", "content": "Invalid JSON"}
-                )
-                continue
+    llm = _build_llm(cfg["api_key"], cfg["model"], cfg["base_url"])
+    state.append(AgentMessage(role="user", content=request.message))
 
-            msg_type = data.get("type")
-            if msg_type != "message":
-                await websocket.send_json(
-                    {"type": "error", "content": f"Unknown type: {msg_type}"}
-                )
-                continue
+    lc_msgs = _to_lc_messages(state.messages, cfg["system_message"])
 
-            user_content = data.get("content", "").strip()
-            if not user_content:
-                continue
+    async def event_generator():
+        yield {"event": "session", "data": json.dumps({"session_id": session_id})}
 
-            session_id = data.get("session_id") or session_id
-            session_id, state = _get_or_create_session(session_id)
+        full_text_parts: list[str] = []
 
-            await websocket.send_json(
-                {"type": "session", "session_id": session_id}
-            )
+        async for event in llm.astream_events(lc_msgs, version="v2"):
+            kind = event["event"]
 
-            state.append(AgentMessage(role="user", content=user_content))
+            if kind == "on_chat_model_start":
+                yield {
+                    "event": "status",
+                    "data": json.dumps({"status": "thinking"}),
+                }
 
-            llm = _build_llm(cfg["api_key"], cfg["model"], cfg["base_url"])
-            lc_msgs = _to_lc_messages(state.messages, cfg["system_message"])
+            elif kind == "on_chat_model_stream":
+                chunk = event["data"].get("chunk")
+                if chunk:
+                    token = chunk.content or ""
+                    if token:
+                        full_text_parts.append(token)
+                        yield {
+                            "event": "chunk",
+                            "data": json.dumps({"content": token}),
+                        }
 
-            full_text_parts: list[str] = []
-            async for chunk in llm.astream(lc_msgs):
-                token = chunk.content or ""
-                if token:
-                    full_text_parts.append(token)
-                    await websocket.send_json(
-                        {"type": "chunk", "content": token}
-                    )
+            elif kind == "on_tool_start":
+                tool_name = event.get("name", "unknown")
+                yield {
+                    "event": "status",
+                    "data": json.dumps({"status": "tool_start", "name": tool_name}),
+                }
 
-            full_text = "".join(full_text_parts)
-            state.append(AgentMessage(role="assistant", content=full_text))
-            state.turns += 1
-            _sessions[session_id] = state
+            elif kind == "on_tool_end":
+                yield {
+                    "event": "status",
+                    "data": json.dumps({"status": "tool_end"}),
+                }
 
-            await websocket.send_json(
-                {"type": "done", "content": full_text}
-            )
+            elif kind == "on_retriever_start":
+                yield {
+                    "event": "status",
+                    "data": json.dumps({"status": "retriever_start"}),
+                }
 
-    except WebSocketDisconnect:
-        pass
+            elif kind == "on_retriever_end":
+                yield {
+                    "event": "status",
+                    "data": json.dumps({"status": "retriever_end"}),
+                }
+
+        full_text = "".join(full_text_parts)
+        state.append(AgentMessage(role="assistant", content=full_text))
+        state.turns += 1
+        _sessions[session_id] = state
+
+        yield {
+            "event": "done",
+            "data": json.dumps({"content": full_text, "session_id": session_id}),
+        }
+
+    return EventSourceResponse(event_generator())
+
+
+# ---------------------------------------------------------------------------
+# Session management
+# ---------------------------------------------------------------------------
+
+@router.get("/session/{session_id}/history", response_model=SessionHistory)
+async def get_history(session_id: str):
+    if session_id not in _sessions:
+        return SessionHistory(session_id=session_id, messages=[], turns=0)
+    state = _sessions[session_id]
+    messages = [MessageOut(role=m.role, content=m.content) for m in state.messages]
+    return SessionHistory(session_id=session_id, messages=messages, turns=state.turns)
+
+
+@router.delete("/session/{session_id}")
+async def delete_session(session_id: str):
+    if session_id in _sessions:
+        del _sessions[session_id]
+    return {"deleted": True, "session_id": session_id}
