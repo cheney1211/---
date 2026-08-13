@@ -313,10 +313,13 @@ body {
   display: flex;
   gap: 12px;
   animation: msgFadeIn 0.25s ease-out;
+  border-radius: var(--radius-md);
+  transition: background 0.15s;
 }
 .chat-msg.user {
   flex-direction: row-reverse;
 }
+
 
 @keyframes msgFadeIn {
   from { opacity: 0; transform: translateY(6px); }
@@ -352,6 +355,10 @@ body {
 }
 .chat-msg.user .chat-bubble-wrap {
   align-items: flex-start;
+}
+.chat-msg.select-mode .chat-bubble-wrap {
+  max-width: none;
+  flex: 1;
 }
 
 .chat-bubble {
@@ -738,6 +745,7 @@ body {
   0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
   40% { opacity: 1; transform: scale(1.2); }
 }
+
 /* ================================================================
    Responsive
    ================================================================ */
@@ -752,4 +760,321 @@ body {
   .suggested-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* ================================================================
+   Chat Bubble Actions
+   ================================================================ */
+.chat-bubble-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.chat-msg:hover .chat-bubble-actions {
+  opacity: 1;
+}
+.chat-msg.user .chat-bubble-actions {
+  justify-content: flex-end;
+}
+.chat-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.chat-action-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--accent);
+  background: var(--bg-tertiary);
+}
+.chat-action-btn.danger:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+/* ================================================================
+   Select Mode
+   ================================================================ */
+.chat-select-check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-left: 12px;
+}
+.checkbox {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 2px solid var(--border);
+  background: var(--bg-tertiary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  color: transparent;
+}
+.checkbox.checked {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* ============================================================
+/* ================================================================
+   Turn Container (Select Mode)
+   ================================================================ */
+.turn-container {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  overflow: hidden;
+  position: relative;
+}
+.turn-container::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--text-muted);
+  border-radius: var(--radius-md) 0 0 var(--radius-md);
+  transition: background 0.15s;
+}
+.turn-container:hover {
+  border-color: var(--accent);
+  background: var(--bg-tertiary);
+}
+.turn-container:hover::before {
+  background: var(--accent);
+}
+.turn-container.selected {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+.turn-container.selected::before {
+  background: var(--accent);
+}
+
+.turn-messages {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px 16px 16px 20px;
+  pointer-events: none;
+}
+
+.turn-check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 48px;
+  border-left: 1px solid var(--border-light);
+}
+
+/* ================================================================
+   Select Mode Float Bar
+   ================================================================ */
+.select-float-bar {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  display: flex;
+  gap: 10px;
+  z-index: 100;
+  animation: floatBarIn 0.2s ease-out;
+}
+
+@keyframes floatBarIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.select-cancel-btn,
+.select-delete-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 18px;
+  border-radius: var(--radius-sm);
+  border: none;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.select-cancel-btn {
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+.select-cancel-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+.select-delete-btn {
+  background: var(--danger);
+  color: #fff;
+}
+.select-delete-btn:hover {
+  background: #dc2626;
+}
+.select-delete-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+/* ================================================================
+   /* ================================================================
+   Turn Container (Select Mode)
+   ================================================================ */
+.turn-container {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  overflow: hidden;
+  position: relative;
+}
+.turn-container::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--text-muted);
+  border-radius: var(--radius-md) 0 0 var(--radius-md);
+  transition: background 0.15s;
+}
+.turn-container:hover {
+  border-color: var(--accent);
+  background: var(--bg-tertiary);
+}
+.turn-container:hover::before {
+  background: var(--accent);
+}
+.turn-container.selected {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+.turn-container.selected::before {
+  background: var(--accent);
+}
+
+.turn-messages {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px 16px 16px 20px;
+  pointer-events: none;
+}
+
+.turn-check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 48px;
+  border-left: 1px solid var(--border-light);
+}
+
+/* ================================================================
+   Chat Edit Mode
+   ================================================================ */
+.chat-edit-area {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  border-top-right-radius: 4px;
+  background: var(--user-bubble);
+}
+.chat-edit-area.user {
+  border-top-right-radius: 4px;
+  border-top-left-radius: var(--radius-md);
+}
+
+.chat-edit-textarea {
+  width: 100%;
+  resize: none;
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 14px;
+  color: var(--text-primary);
+  font-family: inherit;
+  line-height: 1.65;
+  outline: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.chat-edit-cancel,
+.chat-edit-send {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: none;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.chat-edit-cancel {
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+.chat-edit-cancel:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+.chat-edit-send {
+  background: var(--accent);
+  color: #fff;
+}
+.chat-edit-send:hover {
+  background: var(--accent-hover);
+}
+.chat-edit-send:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }

@@ -226,3 +226,22 @@ async def delete_session(session_id: str):
     if session_id in _sessions:
         del _sessions[session_id]
     return {"deleted": True, "session_id": session_id}
+
+
+class SyncMessagesRequest(BaseModel):
+    messages: List[MessageOut]
+    turns: int
+
+
+@router.put("/session/{session_id}/messages")
+async def sync_messages(session_id: str, request: SyncMessagesRequest):
+    """Replace the messages for a session (used after frontend-side edits/deletions)."""
+    if session_id not in _sessions:
+        return {"ok": False, "detail": "session not found"}
+    state = _sessions[session_id]
+    state.messages = [
+        AgentMessage(role=m.role, content=m.content) for m in request.messages
+    ]
+    state.turns = request.turns
+    _sessions[session_id] = state
+    return {"ok": True}

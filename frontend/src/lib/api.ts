@@ -39,6 +39,20 @@ export async function deleteSession(sessionId: string): Promise<void> {
   if (!res.ok) throw new Error(`Failed to delete session: ${res.status}`);
 }
 
+/** Sync updated messages back to the backend after local edits/deletions */
+export async function syncSessionMessages(
+  sessionId: string,
+  messages: ChatMessage[],
+  turns: number
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/session/${sessionId}/messages`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages, turns }),
+  });
+  if (!res.ok) throw new Error(`Failed to sync messages: ${res.status}`);
+}
+
 /** Non-streaming chat request */
 export async function sendMessage(
   message: string,
