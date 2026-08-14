@@ -18,10 +18,10 @@ from typing import Dict, List
 from fastapi import APIRouter
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
 
 from assistant.core import AgentMessage, AgentState
+from .llm.openai_adapter import OpenAIAdapter
+from .llm.provider import build_agent_provider
 
 router = APIRouter()
 
@@ -81,21 +81,17 @@ def _require_env() -> dict:
     }
 
 
-def _to_lc_messages(messages: list[AgentMessage], system_message: str) -> list:
-    lc = [SystemMessage(content=system_message)]
-    for m in messages:
-        if m.role == "user":
-            lc.append(HumanMessage(content=m.content))
-        elif m.role == "assistant":
-            lc.append(AIMessage(content=m.content))
-    return lc
+def _build_agent_adapter(cfg: dict) -> OpenAIAdapter:
+    return OpenAIAdapter(
+        model=cfg["model"],
+        api_key=cfg["api_key"],
+        base_url=cfg["base_url"],
+    )
 
 
-def _build_llm(api_key: str, model: str, base_url: str | None) -> ChatOpenAI:
-    kw = {"model": model, "api_key": api_key, "temperature": 0.7, "streaming": True}
-    if base_url:
-        kw["base_url"] = base_url
-    return ChatOpenAI(**kw)
+def _build_agent_provider(cfg: dict):
+    adapter = _build_agent_adapter(cfg)
+    return build_agent_provider(adapter, system_message=cfg["system_message"])
 
 
 # ---------------------------------------------------------------------------
@@ -113,23 +109,26 @@ async def chat(request: ChatRequest):
     cfg = _require_env()
     session_id, state = _get_or_create_session(request.session_id)
 
-    llm = _build_llm(cfg["api_key"], cfg["model"], cfg["base_url"])
+    provider = _build_agent_provider(cfg)
     state.append(AgentMessage(role="user", content=request.message))
 
-    lc_msgs = _to_lc_messages(state.messages, cfg["system_message"])
-    response = await llm.ainvoke(lc_msgs)
-    reply = response.content
+    full_text = ""
+    async for msg in provider(state):
+        if msg.metadata.get("chunk"):
+            continue
+        if msg.role == "assistant":
+            full_text = msg.content
+            state.append(msg)
 
-    state.append(AgentMessage(role="assistant", content=reply))
     state.turns += 1
     _sessions[session_id] = state
 
-    return ChatResponse(reply=reply, session_id=session_id)
+    return ChatResponse(reply=full_text, session_id=session_id)
 
 
 @router.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
-    """SSE streaming endpoint using astream_events for rich status + token streaming.
+    """SSE streaming endpoint using adapter-backed provider for rich status + token streaming.
 
     Event types:
       - event: session  -> {"session_id": "..."}
@@ -140,63 +139,24 @@ async def chat_stream(request: ChatRequest):
     cfg = _require_env()
     session_id, state = _get_or_create_session(request.session_id)
 
-    llm = _build_llm(cfg["api_key"], cfg["model"], cfg["base_url"])
+    provider = _build_agent_provider(cfg)
     state.append(AgentMessage(role="user", content=request.message))
-
-    lc_msgs = _to_lc_messages(state.messages, cfg["system_message"])
 
     async def event_generator():
         yield {"event": "session", "data": json.dumps({"session_id": session_id})}
 
-        full_text_parts: list[str] = []
-
-        async for event in llm.astream_events(lc_msgs, version="v2"):
-            kind = event["event"]
-
-            if kind == "on_chat_model_start":
+        full_text = ""
+        async for msg in provider(state):
+            if msg.metadata.get("chunk"):
+                full_text += msg.content
                 yield {
-                    "event": "status",
-                    "data": json.dumps({"status": "thinking"}),
+                    "event": "chunk",
+                    "data": json.dumps({"content": msg.content}),
                 }
+            elif msg.role == "assistant":
+                full_text = msg.content
+                state.append(msg)
 
-            elif kind == "on_chat_model_stream":
-                chunk = event["data"].get("chunk")
-                if chunk:
-                    token = chunk.content or ""
-                    if token:
-                        full_text_parts.append(token)
-                        yield {
-                            "event": "chunk",
-                            "data": json.dumps({"content": token}),
-                        }
-
-            elif kind == "on_tool_start":
-                tool_name = event.get("name", "unknown")
-                yield {
-                    "event": "status",
-                    "data": json.dumps({"status": "tool_start", "name": tool_name}),
-                }
-
-            elif kind == "on_tool_end":
-                yield {
-                    "event": "status",
-                    "data": json.dumps({"status": "tool_end"}),
-                }
-
-            elif kind == "on_retriever_start":
-                yield {
-                    "event": "status",
-                    "data": json.dumps({"status": "retriever_start"}),
-                }
-
-            elif kind == "on_retriever_end":
-                yield {
-                    "event": "status",
-                    "data": json.dumps({"status": "retriever_end"}),
-                }
-
-        full_text = "".join(full_text_parts)
-        state.append(AgentMessage(role="assistant", content=full_text))
         state.turns += 1
         _sessions[session_id] = state
 

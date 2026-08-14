@@ -1,18 +1,10 @@
 ﻿from __future__ import annotations
 
 import inspect
-from typing import AsyncIterable, Callable, Iterable, List, Protocol
+from typing import AsyncIterable, Callable, Iterable, List
 
 from .core import AgentMessage, AgentRunState, AgentState
-
-
-class MessageProvider(Protocol):
-    """Callable that receives current state and yields AgentMessage objects.
-
-    Implementations may return either a synchronous Iterable or an
-    AsyncIterable (e.g. an async generator).
-    """
-    def __call__(self, state: AgentState) -> Iterable[AgentMessage] | AsyncIterable[AgentMessage]: ...
+from .interfaces import ProviderProtocol
 
 
 # Callback type: called for every message yielded by the provider.
@@ -23,7 +15,7 @@ OnMessageCallback = Callable[[AgentMessage], None]
 class AgentLoop:
     def __init__(
         self,
-        provider: MessageProvider,
+        provider: ProviderProtocol,
         *,
         max_turns: int = 16,
         system_message: str | None = None,
@@ -64,7 +56,7 @@ class AgentLoop:
 
             if inspect.isawaitable(new_messages) or hasattr(new_messages, "__aiter__"):
                 raise TypeError(
-                    "AgentLoop.run received an async MessageProvider. "
+                    "AgentLoop.run received an async provider. "
                     "Use the async runner path (e.g. app.create_background_task) "
                     "or keep run_in_executor around a sync adapter."
                 )

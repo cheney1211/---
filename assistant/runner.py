@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import List
 
 from .core import AgentMessage, AgentState, AgentRunState
-from .loop import AgentLoop, OnMessageCallback, MessageProvider
+from .loop import AgentLoop, OnMessageCallback
 
 
 @dataclass

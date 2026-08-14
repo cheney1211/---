@@ -1,6 +1,7 @@
 ﻿from .core import AgentMessage, AgentRunState, AgentState
 from .loop import AgentLoop
 from .runner import AgentRunner
+from .interfaces import ProviderProtocol
 
 __all__ = [
     "AgentMessage",
@@ -8,4 +9,5 @@ __all__ = [
     "AgentState",
     "AgentLoop",
     "AgentRunner",
+    "ProviderProtocol",
 ]

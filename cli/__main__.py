@@ -14,7 +14,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from assistant.providers.langgraph_openai import build_provider
+from web.llm.openai_adapter import OpenAIAdapter
+from web.llm.provider import build_agent_provider
 from cli.runner import CLIRunner, AgentRunnerConfig
 
 
