@@ -11,7 +11,6 @@ Provides:
 from __future__ import annotations
 
 import json
-import os
 import uuid
 from typing import Dict, List
 
@@ -20,8 +19,7 @@ from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from assistant.core import AgentMessage, AgentState
-from .llm.openai_adapter import OpenAIAdapter
-from .llm.provider import build_agent_provider
+from .llm import get_provider, get_default_provider_name, get_default_system_message, list_providers
 
 router = APIRouter()
 
@@ -35,6 +33,8 @@ _sessions: Dict[str, AgentState] = {}
 class ChatRequest(BaseModel):
     message: str
     session_id: str | None = None
+    provider: str | None = None
+    model: str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -66,32 +66,15 @@ def _get_or_create_session(session_id: str | None = None) -> tuple[str, AgentSta
     return sid, state
 
 
-def _require_env() -> dict:
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is not set")
-    return {
-        "api_key": api_key,
-        "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-        "base_url": os.getenv("OPENAI_BASE_URL") or None,
-        "system_message": os.getenv(
-            "SYSTEM_MESSAGE",
-            "你叫coco，根据用户给的消息，帮助用户解决问题，语气要温和。",
-        ),
-    }
-
-
-def _build_agent_adapter(cfg: dict) -> OpenAIAdapter:
-    return OpenAIAdapter(
-        model=cfg["model"],
-        api_key=cfg["api_key"],
-        base_url=cfg["base_url"],
+def _resolve_provider(request: ChatRequest):
+    """Resolve provider name and build an agent-ready provider from the registry."""
+    provider_name = request.provider or get_default_provider_name()
+    system_message = get_default_system_message()
+    return get_provider(
+        provider_name,
+        model=request.model,
+        system_message=system_message,
     )
-
-
-def _build_agent_provider(cfg: dict):
-    adapter = _build_agent_adapter(cfg)
-    return build_agent_provider(adapter, system_message=cfg["system_message"])
 
 
 # ---------------------------------------------------------------------------
@@ -103,13 +86,21 @@ async def health():
     return {"status": "ok"}
 
 
+@router.get("/providers")
+async def providers():
+    """List all registered LLM providers."""
+    return {
+        "default": get_default_provider_name(),
+        "providers": list_providers(),
+    }
+
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """Non-streaming REST endpoint for simple request/response."""
-    cfg = _require_env()
     session_id, state = _get_or_create_session(request.session_id)
 
-    provider = _build_agent_provider(cfg)
+    provider = _resolve_provider(request)
     state.append(AgentMessage(role="user", content=request.message))
 
     full_text = ""
@@ -136,10 +127,9 @@ async def chat_stream(request: ChatRequest):
       - event: chunk    -> {"content": "token text"}
       - event: done     -> {"content": "full text", "session_id": "..."}
     """
-    cfg = _require_env()
     session_id, state = _get_or_create_session(request.session_id)
 
-    provider = _build_agent_provider(cfg)
+    provider = _resolve_provider(request)
     state.append(AgentMessage(role="user", content=request.message))
 
     async def event_generator():
