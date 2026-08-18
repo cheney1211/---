@@ -84,6 +84,13 @@ class AssistantLLMProvider:
                         metadata={"chunk": True},
                     )
 
+                elif event_type == "status":
+                    yield AgentMessage(
+                        role="assistant",
+                        content="",
+                        metadata={"chunk": True, "status": event_data},
+                    )
+
                 elif event_type == "tool_calls":
                     tool_calls_seen = True
                     tool_calls_to_execute = event_data.get("tool_calls", [])
@@ -120,6 +127,12 @@ class AssistantLLMProvider:
                 tool_args = tc.get("args", {})
                 tool_call_id = tc.get("id", "")
 
+                yield AgentMessage(
+                    role="assistant",
+                    content="",
+                    metadata={"chunk": True, "status": {"status": "tool_start", "name": tool_name, "args": tool_args}},
+                )
+
                 if self.tool_executor:
                     try:
                         result = self.tool_executor(tool_name, tool_args)
@@ -127,6 +140,12 @@ class AssistantLLMProvider:
                         result = f"Error: {e}"
                 else:
                     result = f"Tool '{tool_name}' is not available"
+
+                yield AgentMessage(
+                    role="assistant",
+                    content="",
+                    metadata={"chunk": True, "status": {"status": "tool_end", "name": tool_name, "output": str(result)}},
+                )
 
                 state.append(AgentMessage(
                     role="tool",

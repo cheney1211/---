@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { Brain, Wrench, CheckCircle } from "lucide-react";
+import { Brain, Wrench, CheckCircle, Loader2 } from "lucide-react";
 import type { AgentStatus } from "@/lib/api";
 
 interface Props {
@@ -9,6 +9,7 @@ interface Props {
 }
 
 export default function StatusIndicator({ status, visible }: Props) {
+  console.log("[Indicator]", visible, status?.status, status);
   if (!visible || !status) return null;
 
   let icon = <Brain size={14} />;
@@ -20,6 +21,9 @@ export default function StatusIndicator({ status, visible }: Props) {
   } else if (status.status === "tool_end") {
     icon = <CheckCircle size={14} />;
     text = `工具完成: ${status.name}`;
+  } else if (status.status === "generating") {
+    icon = <Loader2 size={14} className="animate-spin" />;
+    text = "正在输出";
   }
 
   return (

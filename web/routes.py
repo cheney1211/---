@@ -147,7 +147,13 @@ async def chat_stream(request: ChatRequest):
 
         full_text = ""
         async for msg in provider(state):
-            if msg.metadata.get("chunk"):
+            status_data = msg.metadata.get("status")
+            if status_data:
+                yield {
+                    "event": "status",
+                    "data": json.dumps(status_data),
+                }
+            elif msg.metadata.get("chunk"):
                 full_text += msg.content
                 yield {
                     "event": "chunk",

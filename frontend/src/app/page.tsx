@@ -310,9 +310,11 @@ export default function Home() {
           updateSessionMeta(sid, editedText);
         },
         onStatus: (status) => {
+          console.log("[onStatus]", status.status, status);
           setAgentStatus(status);
         },
         onChunk: (token) => {
+          setAgentStatus({ status: "generating" });
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantId ? { ...m, content: m.content + token } : m
@@ -326,7 +328,6 @@ export default function Home() {
             )
           );
           setIsStreaming(false);
-          setAgentStatus(null);
         },
         onError: (err) => {
           setMessages((prev) =>
@@ -383,6 +384,7 @@ export default function Home() {
           setAgentStatus(status);
         },
         onChunk: (token) => {
+          setAgentStatus({ status: "generating" });
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantId ? { ...m, content: m.content + token } : m
@@ -396,7 +398,6 @@ export default function Home() {
             )
           );
           setIsStreaming(false);
-          setAgentStatus(null);
         },
         onError: (err) => {
           setMessages((prev) =>
