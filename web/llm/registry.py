@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from .base import LLMAdapter
-from .provider import AssistantLLMProvider, build_agent_provider
+from .provider import AssistantLLMProvider, ToolExecutor, build_agent_provider
 
 
 # ---------------------------------------------------------------------------
@@ -123,10 +123,21 @@ def get_provider(
     *,
     model: str | None = None,
     system_message: str | None = None,
+    tools: list | None = None,
+    tool_executor: ToolExecutor | None = None,
 ) -> AssistantLLMProvider:
-    """Build an agent-ready provider for the given provider name."""
+    """Build an agent-ready provider for the given provider name.
+
+    When *tools* and *tool_executor* are provided, the provider will
+    support function calling with automatic tool execution.
+    """
     adapter = get_adapter(name, model=model)
-    return build_agent_provider(adapter, system_message=system_message)
+    return build_agent_provider(
+        adapter,
+        system_message=system_message,
+        tools=tools,
+        tool_executor=tool_executor,
+    )
 
 
 def get_default_provider_name() -> str:

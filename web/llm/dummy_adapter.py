@@ -4,7 +4,7 @@ Dummy adapter for quick local testing (no network / API key needed).
 
 from __future__ import annotations
 
-from typing import Any, AsyncIterator, Dict, List
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 from .base import LLMAdapter
 
@@ -15,6 +15,7 @@ class DummyAdapter(LLMAdapter):
         messages: List[Dict[str, str]],
         *,
         system_message: str | None = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         return "dummy reply"
 
@@ -23,6 +24,7 @@ class DummyAdapter(LLMAdapter):
         messages: List[Dict[str, str]],
         *,
         system_message: str | None = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         yield {"event": "status", "data": {"status": "thinking"}}
 

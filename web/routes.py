@@ -20,6 +20,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from assistant.core import AgentMessage, AgentState
 from .llm import get_provider, get_default_provider_name, get_default_system_message, list_providers
+from assistant.tools import get_tools, execute_tool, list_tools as list_all_tools
 
 router = APIRouter()
 
@@ -70,10 +71,13 @@ def _resolve_provider(request: ChatRequest):
     """Resolve provider name and build an agent-ready provider from the registry."""
     provider_name = request.provider or get_default_provider_name()
     system_message = get_default_system_message()
+    tools = get_tools()
     return get_provider(
         provider_name,
         model=request.model,
         system_message=system_message,
+        tools=tools,
+        tool_executor=execute_tool,
     )
 
 
@@ -93,6 +97,12 @@ async def providers():
         "default": get_default_provider_name(),
         "providers": list_providers(),
     }
+
+
+@router.get("/tools")
+async def tools():
+    """List all registered tools."""
+    return {"tools": list_all_tools()}
 
 
 @router.post("/chat", response_model=ChatResponse)
