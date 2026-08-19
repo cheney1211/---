@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from .base import LLMAdapter
-from .provider import AssistantLLMProvider, ToolExecutor, build_agent_provider
+from .langgraph_provider import LangGraphProvider
 
 
 # ---------------------------------------------------------------------------
@@ -124,19 +124,33 @@ def get_provider(
     model: str | None = None,
     system_message: str | None = None,
     tools: list | None = None,
-    tool_executor: ToolExecutor | None = None,
-) -> AssistantLLMProvider:
-    """Build an agent-ready provider for the given provider name.
+    **kwargs,
+) -> LangGraphProvider:
+    """Build an agent-ready provider backed by LangGraph.
 
-    When *tools* and *tool_executor* are provided, the provider will
-    support function calling with automatic tool execution.
+    对于有 LLM 的适配器（openai / deepseek / ollama），返回 LangGraphProvider。
+    对于 dummy 适配器，返回一个简单的回显 provider。
     """
+    if name == "dummy":
+        return _build_dummy_provider(system_message=system_message)
+
     adapter = get_adapter(name, model=model)
-    return build_agent_provider(
-        adapter,
+    return LangGraphProvider(
+        llm=adapter.llm,
+        tools=tools or [],
         system_message=system_message,
-        tools=tools,
-        tool_executor=tool_executor,
+    )
+
+
+def _build_dummy_provider(*, system_message: str | None = None) -> LangGraphProvider:
+    """构造一个不依赖 LLM 的回显 provider，用于本地测试。"""
+    from langchain_core.language_models import FakeListChatModel
+
+    fake_llm = FakeListChatModel(responses=["(dummy) 收到你的消息了。"])
+    return LangGraphProvider(
+        llm=fake_llm,
+        tools=[],
+        system_message=system_message,
     )
 
 

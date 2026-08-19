@@ -9,6 +9,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, AsyncIterator, Dict, List, Optional
 
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
@@ -20,6 +21,11 @@ from langchain_core.messages import (
 
 class LLMAdapter(ABC):
     """Base adapter with shared message conversion logic."""
+
+    @property
+    def llm(self) -> BaseChatModel:
+        """暴露底层 LangChain BaseChatModel 实例，供 LangGraph 使用。"""
+        return self._llm
 
     def _to_lc_messages(
         self,
