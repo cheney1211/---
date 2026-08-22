@@ -15,6 +15,7 @@ from prompt_toolkit.layout.margins import ScrollbarMargin
 from prompt_toolkit.styles import Style
 
 from assistant.runner import AgentRunner, AgentRunnerConfig
+from assistant.skills import list_skills
 
 _COMMANDS = WordCompleter(
     ["/exit", "/quit", "/help"],
@@ -154,7 +155,26 @@ class CLIRunner(AgentRunner):
                     chat_fragments.append(("class:header", "/help\n"))
                     chat_fragments.append(("", "  /exit    Exit the assistant\n"))
                     chat_fragments.append(("", "  /quit    Exit the assistant\n"))
+                    chat_fragments.append(("", "  /skills  List available skills\n"))
                     chat_fragments.append(("", "  /help    Show this help\n"))
+                    chat_fragments.append(("", "\n"))
+                    app.invalidate()
+                    continue
+
+                if cmd == "/skills":
+                    chat_fragments.append(("class:header", "/skills\n"))
+                    skills = list_skills()
+                    if not skills:
+                        chat_fragments.append(("", "  (none)\n"))
+                    else:
+                    for skill in skills:
+                        tags = ", ".join(skill.get("tags") or []) or "-"
+                        chat_fragments.append(
+                            (
+                                "",
+                                f"  {skill['name']} — {skill['description']} [v{skill.get('version', '?')} by {skill.get('author', '?')}] [tags: {tags}]\n",
+                            )
+                        )
                     chat_fragments.append(("", "\n"))
                     app.invalidate()
                     continue

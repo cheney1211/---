@@ -6,6 +6,9 @@ Provides:
   - POST /api/chat/stream         -- SSE streaming endpoint
   - GET  /api/providers           -- list LLM providers
   - GET  /api/tools               -- list registered tools
+  - GET  /api/skills              -- list registered skills
+  - GET  /api/skills/{name}       -- skill details (with tools)
+  - POST /api/skills/reload       -- reload skills from disk
   - GET  /api/session/{id}/history -- get session history
   - PUT  /api/session/{id}/messages -- sync messages after frontend edits
   - DELETE /api/session/{id}      -- delete session
@@ -14,17 +17,30 @@ Provides:
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from typing import Dict, List
 
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from assistant.core import AgentMessage, AgentState
 from assistant.tools import get_tools, list_tools as list_all_tools
+from assistant.tools.builtin.call_skill import SKILL_ROUTING_PREFIX
+from assistant.skills import (
+    list_skills,
+    get_skill_details,
+    get_skill,
+    reload_skills,
+    build_skills_system_prompt,
+    build_skill_instruction_prompt,
+)
 from storage.repositories import SessionRepo, MessageRepo, PendingToolRepo
 from .llm import get_provider, get_default_provider_name, get_default_system_message, list_providers
+
+logger = logging.getLogger("web.routes")
 
 router = APIRouter()
 
@@ -55,6 +71,28 @@ class SessionHistory(BaseModel):
     messages: List[MessageOut]
     turns: int
 
+class SkillSummary(BaseModel):
+    name: str
+    description: str
+    tags: List[str]
+    tool_names: List[str]
+    version: str
+    author: str
+
+class SkillToolOut(BaseModel):
+    name: str
+    description: str
+
+class SkillDetail(BaseModel):
+    name: str
+    description: str
+    tags: List[str]
+    tool_names: List[str]
+    instruction: str | None = None
+    version: str
+    author: str
+    tools: List[SkillToolOut]
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -76,15 +114,32 @@ async def _get_or_create_session(
 
 
 def _resolve_provider(request: ChatRequest):
-    """Resolve provider name and build an agent-ready provider from the registry."""
+    """Resolve provider with skill index injected into system message."""
     provider_name = request.provider or get_default_provider_name()
-    system_message = get_default_system_message()
+    base_system = get_default_system_message()
+    skill_index = build_skills_system_prompt()
+    system_message = f"{base_system}\n\n{skill_index}" if skill_index else base_system
     tools = get_tools()
     return get_provider(
         provider_name,
         model=request.model,
         system_message=system_message,
         tools=tools,
+    )
+
+
+def _build_skill_provider(request: ChatRequest, skill_name: str):
+    """Build a provider for the second LLM call with full skill instruction."""
+    provider_name = request.provider or get_default_provider_name()
+    base_system = get_default_system_message()
+    skill_prompt = build_skill_instruction_prompt(skill_name)
+    system_message = f"{base_system}\n\n{skill_prompt}"
+    # No tools in second call - pure text generation
+    return get_provider(
+        provider_name,
+        model=request.model,
+        system_message=system_message,
+        tools=[],
     )
 
 
@@ -97,6 +152,14 @@ def _classify_and_extract(msg: AgentMessage) -> tuple[str, bool]:
     if msg.metadata.get("tool_calls"):
         return "tool_request", False
     return msg.role if msg.role in ("user", "assistant", "system") else "user", False
+
+
+def _detect_skill_routing(state: AgentState) -> str | None:
+    """Check if the last tool result is a skill routing call. Returns skill name or None."""
+    for msg in reversed(state.messages):
+        if msg.role == "tool" and msg.content.startswith(SKILL_ROUTING_PREFIX):
+            return msg.content[len(SKILL_ROUTING_PREFIX):].strip()
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -123,9 +186,32 @@ async def tools():
     return {"tools": list_all_tools()}
 
 
+@router.get("/skills", response_model=List[SkillSummary])
+async def skills():
+    """List all registered skills."""
+    return list_skills()
+
+
+@router.get("/skills/{skill_name}", response_model=SkillDetail)
+async def skill_detail(skill_name: str):
+    """Return details for a given skill, including tool metadata."""
+    try:
+        detail = get_skill_details(skill_name)
+    except ValueError as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc)})
+    return detail
+
+
+@router.post("/skills/reload")
+async def skills_reload():
+    """Reload all skills from disk."""
+    count = reload_skills()
+    return {"status": "ok", "skill_count": count}
+
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    """Non-streaming REST endpoint for simple request/response."""
+    """Non-streaming REST endpoint with two-phase skill routing."""
     session_id, state = await _get_or_create_session(
         request.session_id, provider=request.provider, model=request.model
     )
@@ -135,30 +221,25 @@ async def chat(request: ChatRequest):
     await MessageRepo.append(session_id, user_msg, kind="user")
     state.append(user_msg)
 
+    # --- Phase 1: LLM call with skill index ---
     provider = _resolve_provider(request)
 
     full_text = ""
     async for msg in provider(state):
         if msg.metadata.get("chunk"):
             continue
-
         kind, is_chunk = _classify_and_extract(msg)
+        await MessageRepo.append(session_id, msg, kind=kind, is_chunk=is_chunk)
 
-        # Persist to DB
-        db_row = await MessageRepo.append(session_id, msg, kind=kind, is_chunk=is_chunk)
-
-        # If this is a tool_request, register pending calls
         if kind == "tool_request" and msg.metadata.get("tool_calls"):
             for tc in msg.metadata["tool_calls"]:
                 await PendingToolRepo.create(
                     session_id=session_id,
-                    message_id=db_row.id,
+                    message_id=0,
                     call_id=tc.get("id", ""),
                     tool_name=tc["name"],
                     arguments=tc.get("args", {}),
                 )
-
-        # If this is a tool_result, mark corresponding pending as done
         if kind == "tool_result":
             tcid = msg.metadata.get("tool_call_id", "")
             if tcid:
@@ -171,6 +252,25 @@ async def chat(request: ChatRequest):
         if msg.role == "assistant":
             full_text = msg.content
 
+    # --- Phase 2: Check if skill routing was triggered ---
+    skill_name = _detect_skill_routing(state)
+    if skill_name:
+        logger.info("Skill routing detected: %s", skill_name)
+        try:
+            skill_provider = _build_skill_provider(request, skill_name)
+        except ValueError:
+            pass
+        else:
+            full_text = ""
+            async for msg in skill_provider(state):
+                if msg.metadata.get("chunk"):
+                    continue
+                kind, is_chunk = _classify_and_extract(msg)
+                await MessageRepo.append(session_id, msg, kind=kind, is_chunk=is_chunk)
+                state.append(msg)
+                if msg.role == "assistant":
+                    full_text = msg.content
+
     state.turns += 1
     await SessionRepo.set_turns(session_id, state.turns)
 
@@ -179,19 +279,11 @@ async def chat(request: ChatRequest):
 
 @router.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
-    """SSE streaming endpoint.
-
-    Event types:
-      - event: session  -> {"session_id": "..."}
-      - event: status   -> {"status": "thinking" | "tool_start" | "tool_end" | ...}
-      - event: chunk    -> {"content": "token text"}
-      - event: done     -> {"content": "full text", "session_id": "..."}
-    """
+    """SSE streaming endpoint with two-phase skill routing."""
     session_id, state = await _get_or_create_session(
         request.session_id, provider=request.provider, model=request.model
     )
 
-    # Persist user message
     user_msg = AgentMessage(role="user", content=request.message)
     await MessageRepo.append(session_id, user_msg, kind="user")
     state.append(user_msg)
@@ -205,39 +297,27 @@ async def chat_stream(request: ChatRequest):
         async for msg in provider(state):
             status_data = msg.metadata.get("status")
             if status_data:
-                # Forward status event to frontend but don't persist
-                yield {
-                    "event": "status",
-                    "data": json.dumps(status_data),
-                }
+                yield {"event": "status", "data": json.dumps(status_data)}
                 continue
 
             if msg.metadata.get("chunk"):
                 full_text += msg.content
-                yield {
-                    "event": "chunk",
-                    "data": json.dumps({"content": msg.content}),
-                }
+                yield {"event": "chunk", "data": json.dumps({"content": msg.content})}
                 continue
 
-            # --- Non-chunk: classify, persist, handle tool lifecycle ---
             kind, is_chunk = _classify_and_extract(msg)
-            db_row = await MessageRepo.append(
-                session_id, msg, kind=kind, is_chunk=is_chunk
-            )
+            await MessageRepo.append(session_id, msg, kind=kind, is_chunk=is_chunk)
 
-            # tool_request -> create pending
             if kind == "tool_request" and msg.metadata.get("tool_calls"):
                 for tc in msg.metadata["tool_calls"]:
                     await PendingToolRepo.create(
                         session_id=session_id,
-                        message_id=db_row.id,
+                        message_id=0,
                         call_id=tc.get("id", ""),
                         tool_name=tc["name"],
                         arguments=tc.get("args", {}),
                     )
 
-            # tool_result -> mark pending done
             if kind == "tool_result":
                 tcid = msg.metadata.get("tool_call_id", "")
                 if tcid:
@@ -250,13 +330,44 @@ async def chat_stream(request: ChatRequest):
             if msg.role == "assistant":
                 full_text = msg.content
 
+        # --- Phase 2: skill routing ---
+        skill_name = _detect_skill_routing(state)
+        if skill_name:
+            logger.info("Skill routing detected (stream): %s", skill_name)
+            yield {
+                "event": "status",
+                "data": json.dumps({"status": "skill_routing", "skill": skill_name}),
+            }
+            try:
+                skill_provider = _build_skill_provider(request, skill_name)
+            except ValueError:
+                pass
+            else:
+                full_text = ""
+                async for msg in skill_provider(state):
+                    status_data = msg.metadata.get("status")
+                    if status_data:
+                        yield {"event": "status", "data": json.dumps(status_data)}
+                        continue
+
+                    if msg.metadata.get("chunk"):
+                        full_text += msg.content
+                        yield {"event": "chunk", "data": json.dumps({"content": msg.content})}
+                        continue
+
+                    kind, is_chunk = _classify_and_extract(msg)
+                    await MessageRepo.append(session_id, msg, kind=kind, is_chunk=is_chunk)
+                    state.append(msg)
+                    if msg.role == "assistant":
+                        full_text = msg.content
+
         state.turns += 1
         await SessionRepo.set_turns(session_id, state.turns)
 
         yield {
             "event": "done",
             "data": json.dumps({"content": full_text, "session_id": session_id}),
-         }
+        }
 
     return EventSourceResponse(event_generator())
 
@@ -292,5 +403,3 @@ async def sync_messages(session_id: str, request: SyncMessagesRequest):
     ]
     await MessageRepo.sync_messages(session_id, agent_msgs, request.turns)
     return {"ok": True}
-
-

@@ -15,17 +15,22 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from web.llm import get_provider, get_default_provider_name, get_default_system_message
+from assistant.tools import get_tools
+from assistant.skills import build_skills_system_prompt
 from cli.runner import CLIRunner, AgentRunnerConfig
 
 
 def main() -> None:
     provider_name = get_default_provider_name()
-    system_message = get_default_system_message()
+    base_system = get_default_system_message()
+    skill_index = build_skills_system_prompt()
+    system_message = f"{base_system}\n\n{skill_index}" if skill_index else base_system
     stream = os.getenv("OPENAI_STREAM", "true").strip().lower() in {
         "1", "true", "yes",
     }
 
-    provider = get_provider(provider_name, system_message=system_message)
+    tools = get_tools()
+    provider = get_provider(provider_name, system_message=system_message, tools=tools)
 
     runner = CLIRunner(
         provider=provider,
