@@ -1,125 +1,53 @@
-"""CLI runner: extends AgentRunner with a prompt_toolkit TUI."""
+﻿"""CLI runner: extends AgentRunner with a prompt_toolkit TUI."""
 
 from __future__ import annotations
 
 import asyncio
 import shutil
 
-from prompt_toolkit import Application
-from prompt_toolkit.buffer import Buffer
+from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import WordCompleter
-from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import HSplit, Layout, Window
-from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
-from prompt_toolkit.layout.margins import ScrollbarMargin
-from prompt_toolkit.styles import Style
 
 from assistant.runner import AgentRunner, AgentRunnerConfig
-from assistant.skills import list_skills
+from assistant.skills import list_skills, reload_skills
 
 _COMMANDS = WordCompleter(
-    ["/exit", "/quit", "/help"],
+    ["/exit", "/quit", "/help", "/skills", "/reload_skills"],
     ignore_case=True,
     sentence=True,
 )
 
 
 class CLIRunner(AgentRunner):
-    """AgentRunner with a full-screen prompt_toolkit chat interface."""
+    """CLI chat using normal terminal output (native scrollback)."""
 
     def run_cli(self, *, first_message: str | None = None) -> None:
-        chat_fragments: list = []
-        prefix_printed = [False]
-        pending_input: list[str | None] = [None]
-        should_exit = [False]
-        processing = [False]
+        session = PromptSession(completer=_COMMANDS)
         state = self._state
 
-        chat_fragments.append(("class:header", f"{self.config.agent_name}\n"))
-        chat_fragments.append(("", "\n"))
-
-        def get_chat_text():
-            return chat_fragments
-
-        def get_separator():
+        def print_separator() -> None:
             width = shutil.get_terminal_size((80, 24)).columns
-            return [("class:sep", "\u2500" * width)]
+            print("\u2500" * width)
 
-        input_buffer = Buffer(completer=_COMMANDS)
-        input_window = Window(height=1, content=BufferControl(buffer=input_buffer))
+        def print_message(role: str, content: str) -> None:
+            if role == "user":
+                print(f"{self.config.user_name}\uff1a{content}")
+            elif role == "agent":
+                print(f"{self.config.agent_name}: {content}", end="")
+            else:
+                print(content, end="")
 
-        output_window = Window(
-            content=FormattedTextControl(text=get_chat_text),
-            wrap_lines=True,
-            always_hide_cursor=True,
-            right_margins=[ScrollbarMargin()],
-        )
+        def handle_reply(reply: str | None) -> None:
+            if reply:
+                print(f"{self.config.agent_name}: {reply}")
 
-        layout = Layout(
-            HSplit([
-                output_window,
-                Window(height=1, content=FormattedTextControl(text=get_separator)),
-                input_window,
-                Window(height=1, content=FormattedTextControl(text=get_separator)),
-            ]),
-            focused_element=input_window,
-        )
-
-        kb = KeyBindings()
-
-        @kb.add("enter")
-        def _(event):
-            text = input_buffer.text.strip()
-            input_buffer.reset()
-            if text and not processing[0]:
-                pending_input[0] = text
-
-        @kb.add("c-c")
-        @kb.add("c-q")
-        def _(event):
-            should_exit[0] = True
-            event.app.exit()
-
-        style = Style.from_dict({
-            "header": "bold fg:green",
-            "user": "bold fg:ansiblue",
-            "agent": "bold fg:#ff87d7",
-            "sep": "#888888",
-        })
-
-        app = Application(
-            layout=layout,
-            key_bindings=kb,
-            full_screen=True,
-            style=style,
-            mouse_support=True,
-        )
-
-        def make_on_message():
-            def on_message(msg):
-                if msg.metadata.get("chunk"):
-                    if not prefix_printed[0]:
-                        chat_fragments.append(
-                            ("class:agent", f"{self.config.agent_name}: ")
-                        )
-                        prefix_printed[0] = True
-                    chat_fragments.append(("", msg.content))
-                    app.invalidate()
-                elif msg.role == "assistant":
-                    chat_fragments.append(("", "\n"))
-                    prefix_printed[0] = False
-                    app.invalidate()
-            return on_message
-
-        async def chat_loop():
+        async def run() -> None:
             nonlocal state
+            print(self.config.agent_name)
+            print()
 
             if first_message:
-                chat_fragments.append(
-                    ("class:user", f"{self.config.user_name}\uff1a")
-                )
-                chat_fragments.append(("", f"{first_message}\n"))
-                app.invalidate()
+                print_message("user", first_message)
                 on_msg = make_on_message()
                 if self._is_async_provider():
                     state = await self.acreate_state(first_message, on_message=on_msg)
@@ -129,95 +57,91 @@ class CLIRunner(AgentRunner):
                         lambda: self.create_state(first_message, on_message=on_msg),
                     )
                 if not self.config.stream:
-                    reply = self._last_assistant_message(state)
-                    if reply:
-                        chat_fragments.append(
-                            ("class:agent", f"{self.config.agent_name}: ")
-                        )
-                        chat_fragments.append(("", f"{reply}\n"))
-                        app.invalidate()
+                    handle_reply(self._last_assistant_message(state))
 
-            while not should_exit[0]:
-                while pending_input[0] is None and not should_exit[0]:
-                    await asyncio.sleep(0.05)
-                if should_exit[0]:
+            while True:
+                try:
+                    text = await session.prompt_async("> ")
+                except (EOFError, KeyboardInterrupt):
                     break
 
-                text = pending_input[0]
-                pending_input[0] = None
+                text = text.strip()
+                if not text:
+                    continue
 
                 cmd = text.lower()
-                if cmd in {"quit", "exit", ":q", "/exit", "/quit"}:
-                    should_exit[0] = True
+                if cmd in {"/exit", "/quit"}:
                     break
 
                 if cmd == "/help":
-                    chat_fragments.append(("class:header", "/help\n"))
-                    chat_fragments.append(("", "  /exit    Exit the assistant\n"))
-                    chat_fragments.append(("", "  /quit    Exit the assistant\n"))
-                    chat_fragments.append(("", "  /skills  List available skills\n"))
-                    chat_fragments.append(("", "  /help    Show this help\n"))
-                    chat_fragments.append(("", "\n"))
-                    app.invalidate()
+                    print("/help")
+                    print("  /exit    Exit the assistant")
+                    print("  /quit    Exit the assistant")
+                    print("  /skills  List available skills")
+                    print("  /reload_skills  Reload skills from disk")
+                    print("  /help    Show this help")
+                    print()
+                    continue
+
+                if cmd == "/reload_skills":
+                    print("/reload_skills")
+                    try:
+                        count = reload_skills()
+                        print(f"  Reloaded {count} skill(s)")
+                    except Exception as exc:
+                        print(f"  Reload failed: {exc}")
+                    print()
                     continue
 
                 if cmd == "/skills":
-                    chat_fragments.append(("class:header", "/skills\n"))
+                    print("/skills")
                     skills = list_skills()
                     if not skills:
-                        chat_fragments.append(("", "  (none)\n"))
+                        print("  (none)")
                     else:
-                    for skill in skills:
-                        tags = ", ".join(skill.get("tags") or []) or "-"
-                        chat_fragments.append(
-                            (
-                                "",
-                                f"  {skill['name']} — {skill['description']} [v{skill.get('version', '?')} by {skill.get('author', '?')}] [tags: {tags}]\n",
+                        for skill in skills:
+                            tags = ", ".join(skill.get("tags") or []) or "-"
+                            print(
+                                f"  {skill['name']} \u2014 {skill['description']} "
+                                f"[v{skill.get('version', '?')} by {skill.get('author', '?')}] "
+                                f"[tags: {tags}]"
                             )
-                        )
-                    chat_fragments.append(("", "\n"))
-                    app.invalidate()
+                    print()
                     continue
 
-                processing[0] = True
-                chat_fragments.append(
-                    ("class:user", f"{self.config.user_name}\uff1a")
-                )
-                chat_fragments.append(("", f"{text}\n"))
-                app.invalidate()
+                print_message("user", text)
 
-                on_msg = make_on_message()
+                def make_on_message():
+                    printed = [False]
+
+                    def on_message(msg):
+                        if msg.metadata.get("chunk"):
+                            if not printed[0]:
+                                print(f"{self.config.agent_name}: ", end="", flush=True)
+                                printed[0] = True
+                            print(msg.content, end="", flush=True)
+                        elif msg.role == "assistant":
+                            if not printed[0]:
+                                print(f"{self.config.agent_name}: ", end="", flush=True)
+                                printed[0] = True
+                            print()
+                    return on_message
 
                 if self._is_async_provider():
                     state = await self.acontinue_state(
-                        state, text, on_message=on_msg
+                        state, text, on_message=make_on_message()
                     )
                 else:
                     def process():
-                        return self.continue_state(state, text, on_message=on_msg)
+                        return self.continue_state(state, text, on_message=make_on_message())
 
                     state = await asyncio.get_running_loop().run_in_executor(
                         None, process
                     )
 
                 if not self.config.stream:
-                    reply = self._last_assistant_message(state)
-                    if reply:
-                        chat_fragments.append(
-                            ("class:agent", f"{self.config.agent_name}: ")
-                        )
-                        chat_fragments.append(("", f"{reply}\n"))
-                        app.invalidate()
+                    handle_reply(self._last_assistant_message(state))
 
-                processing[0] = False
+            print("Goodbye!")
 
-            app.exit()
-
-        async def run_app():
-            nonlocal state
-            app.create_background_task(chat_loop())
-            await app.run_async()
-
-        asyncio.run(run_app())
-        self._state = state
-        print("Goodbye!")
+        asyncio.run(run())
