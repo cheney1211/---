@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { PanelLeftClose, PanelLeft, X, Trash2, Check } from "lucide-react";
 import ChatMessage from "@/components/ChatMessage";
 import ChatInput from "@/components/ChatInput";
+import ConfirmationDialog from "@/components/ConfirmationDialog";
 import Sidebar, { type SessionMeta } from "@/components/Sidebar";
 import SuggestedPrompts from "@/components/SuggestedPrompts";
 import {
@@ -12,6 +13,7 @@ import {
   getSessionHistory,
   deleteSession as apiDeleteSession,
   syncSessionMessages,
+  resolveConfirmation,
   type AgentStatus,
 } from "@/lib/api";
 
@@ -36,6 +38,13 @@ interface Turn {
   assistant?: Message;
 }
 
+interface ConfirmationData {
+  confirmation_id: string;
+  tool_name: string;
+  tool_args: Record<string, unknown>;
+  description: string;
+}
+
 function groupIntoTurns(messages: Message[]): Turn[] {
   const turns: Turn[] = [];
   let i = 0;
@@ -51,7 +60,6 @@ function groupIntoTurns(messages: Message[]): Turn[] {
         i += 1;
       }
     } else {
-      // orphan assistant, skip
       i += 1;
     }
   }
@@ -84,6 +92,9 @@ export default function Home() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<(() => void) | null>(null);
 
+  // ---- confirmation state ----
+  const [confirmation, setConfirmation] = useState<ConfirmationData | null>(null);
+
   // ---- select mode ----
   const [selectMode, setSelectMode] = useState(false);
   const [selectedTurnIds, setSelectedTurnIds] = useState<Set<string>>(new Set());
@@ -108,7 +119,7 @@ export default function Home() {
       top: scrollRef.current.scrollHeight,
       behavior: "smooth",
     });
-  }, [messages, agentStatus]);
+  }, [messages, agentStatus, confirmation]);
 
   // ---- session helpers ----
   const updateSessionMeta = useCallback(
@@ -164,6 +175,7 @@ export default function Home() {
       setSelectMode(false);
       setSelectedTurnIds(new Set());
       setEditingMsgId(null);
+      setConfirmation(null);
       try {
         const history = await getSessionHistory(sid);
         setMessages(
@@ -187,6 +199,7 @@ export default function Home() {
     setSelectMode(false);
     setSelectedTurnIds(new Set());
     setEditingMsgId(null);
+    setConfirmation(null);
   }, [isStreaming]);
 
   const handleDeleteSession = useCallback(
@@ -199,10 +212,34 @@ export default function Home() {
         setSelectMode(false);
         setSelectedTurnIds(new Set());
         setEditingMsgId(null);
+        setConfirmation(null);
       }
     },
     [sessionId]
   );
+
+  // ---- confirmation handlers ----
+  const handleConfirmApprove = useCallback(async () => {
+    if (!confirmation) return;
+    const id = confirmation.confirmation_id;
+    setConfirmation(null);
+    try {
+      await resolveConfirmation(id, true);
+    } catch {
+      // backend resolve failed -- the timeout will handle it
+    }
+  }, [confirmation]);
+
+  const handleConfirmReject = useCallback(async () => {
+    if (!confirmation) return;
+    const id = confirmation.confirmation_id;
+    setConfirmation(null);
+    try {
+      await resolveConfirmation(id, false);
+    } catch {
+      // backend resolve failed -- the timeout will handle it
+    }
+  }, [confirmation]);
 
   // ---- select mode ----
   const handleEnterSelectMode = useCallback(() => {
@@ -248,7 +285,6 @@ export default function Home() {
     setSelectMode(false);
     setSelectedTurnIds(new Set());
 
-    // Sync remaining messages to backend so deletions persist across refreshes
     if (sessionId) {
       const remainingTurns = remaining.filter((m) => m.role === "user").length;
       try {
@@ -310,8 +346,17 @@ export default function Home() {
           updateSessionMeta(sid, editedText);
         },
         onStatus: (status) => {
-          console.log("[onStatus]", status.status, status);
-          setAgentStatus(status);
+          if (status.status === "confirmation_required") {
+            setConfirmation({
+              confirmation_id: status.confirmation_id,
+              tool_name: status.tool_name,
+              tool_args: status.tool_args,
+              description: status.description,
+            });
+            setAgentStatus(status);
+          } else {
+            setAgentStatus(status);
+          }
         },
         onChunk: (token) => {
           setAgentStatus({ status: "generating" });
@@ -328,6 +373,7 @@ export default function Home() {
             )
           );
           setIsStreaming(false);
+          setConfirmation(null);
         },
         onError: (err) => {
           setMessages((prev) =>
@@ -339,6 +385,7 @@ export default function Home() {
           );
           setIsStreaming(false);
           setAgentStatus(null);
+          setConfirmation(null);
         },
       });
 
@@ -381,7 +428,17 @@ export default function Home() {
           updateSessionMeta(sid, text);
         },
         onStatus: (status) => {
-          setAgentStatus(status);
+          if (status.status === "confirmation_required") {
+            setConfirmation({
+              confirmation_id: status.confirmation_id,
+              tool_name: status.tool_name,
+              tool_args: status.tool_args,
+              description: status.description,
+            });
+            setAgentStatus(status);
+          } else {
+            setAgentStatus(status);
+          }
         },
         onChunk: (token) => {
           setAgentStatus({ status: "generating" });
@@ -398,6 +455,7 @@ export default function Home() {
             )
           );
           setIsStreaming(false);
+          setConfirmation(null);
         },
         onError: (err) => {
           setMessages((prev) =>
@@ -409,6 +467,7 @@ export default function Home() {
           );
           setIsStreaming(false);
           setAgentStatus(null);
+          setConfirmation(null);
         },
       });
 
@@ -421,6 +480,7 @@ export default function Home() {
     abortRef.current?.();
     setIsStreaming(false);
     setAgentStatus(null);
+    setConfirmation(null);
 
     setMessages((prev) => {
       const last = prev[prev.length - 1];
@@ -474,7 +534,7 @@ export default function Home() {
           <button
             className="sidebar-toggle"
             onClick={() => setSidebarOpen((v) => !v)}
-            title={sidebarOpen ? "收起侧边栏" : "展开侧边栏"}
+            title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
           >
             {sidebarOpen ? <PanelLeftClose size={18} /> : <PanelLeft size={18} />}
           </button>
@@ -528,21 +588,29 @@ export default function Home() {
           <button
             className="select-cancel-btn"
             onClick={handleCancelSelect}
-            title="取消"
+            title="Cancel"
           >
             <X size={16} />
-            <span>取消</span>
+            <span>Cancel</span>
           </button>
           <button
             className="select-delete-btn"
             onClick={handleConfirmDelete}
             disabled={selectedTurnIds.size === 0}
-            title="删除"
+            title="Delete"
           >
             <Trash2 size={16} />
-            <span>删除 ({selectedTurnIds.size})</span>
+            <span>Delete ({selectedTurnIds.size})</span>
           </button>
         </div>
+      )}
+
+      {confirmation && (
+        <ConfirmationDialog
+          data={confirmation}
+          onApprove={handleConfirmApprove}
+          onReject={handleConfirmReject}
+        />
       )}
     </div>
   );

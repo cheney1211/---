@@ -12,6 +12,8 @@ Provides:
   - GET  /api/session/{id}/history -- get session history
   - PUT  /api/session/{id}/messages -- sync messages after frontend edits
   - DELETE /api/session/{id}      -- delete session
+  - POST /api/confirm/{id}        -- approve/reject a pending confirmation
+  - GET  /api/confirm/pending     -- list pending confirmation requests
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from typing import Dict, List
+from typing import List
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -27,18 +29,17 @@ from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from assistant.core import AgentMessage, AgentState
-from assistant.tools import get_tools, list_tools as list_all_tools
-from assistant.tools.builtin.call_skill import SKILL_ROUTING_PREFIX
+from assistant.tools import get_tools, list_tools as list_all_tools, register as register_tool
+from assistant.tools.builtin.call_skill import CallSkillTool, configure as configure_call_skill
 from assistant.skills import (
     list_skills,
     get_skill_details,
-    get_skill,
     reload_skills,
     build_skills_system_prompt,
-    build_skill_instruction_prompt,
 )
 from storage.repositories import SessionRepo, MessageRepo, PendingToolRepo
-from .llm import get_provider, get_default_provider_name, get_default_system_message, list_providers
+from web.llm.langgraph_provider import confirmation_manager
+from .llm import get_adapter, get_provider, get_default_provider_name, get_default_system_message, list_providers
 
 logger = logging.getLogger("web.routes")
 
@@ -71,6 +72,7 @@ class SessionHistory(BaseModel):
     messages: List[MessageOut]
     turns: int
 
+
 class SkillSummary(BaseModel):
     name: str
     description: str
@@ -79,9 +81,11 @@ class SkillSummary(BaseModel):
     version: str
     author: str
 
+
 class SkillToolOut(BaseModel):
     name: str
     description: str
+
 
 class SkillDetail(BaseModel):
     name: str
@@ -92,6 +96,10 @@ class SkillDetail(BaseModel):
     version: str
     author: str
     tools: List[SkillToolOut]
+
+
+class ConfirmRequest(BaseModel):
+    approved: bool
 
 
 # ---------------------------------------------------------------------------
@@ -114,32 +122,23 @@ async def _get_or_create_session(
 
 
 def _resolve_provider(request: ChatRequest):
-    """Resolve provider with skill index injected into system message."""
+    """Build provider with tools (including call_skill) and skill index."""
     provider_name = request.provider or get_default_provider_name()
     base_system = get_default_system_message()
     skill_index = build_skills_system_prompt()
     system_message = f"{base_system}\n\n{skill_index}" if skill_index else base_system
+
+    # Configure call_skill tool with LLM and register it
+    adapter = get_adapter(provider_name, model=request.model)
+    configure_call_skill(adapter.llm, base_system)
+    register_tool(CallSkillTool())
+
     tools = get_tools()
     return get_provider(
         provider_name,
         model=request.model,
         system_message=system_message,
         tools=tools,
-    )
-
-
-def _build_skill_provider(request: ChatRequest, skill_name: str):
-    """Build a provider for the second LLM call with full skill instruction."""
-    provider_name = request.provider or get_default_provider_name()
-    base_system = get_default_system_message()
-    skill_prompt = build_skill_instruction_prompt(skill_name)
-    system_message = f"{base_system}\n\n{skill_prompt}"
-    # No tools in second call - pure text generation
-    return get_provider(
-        provider_name,
-        model=request.model,
-        system_message=system_message,
-        tools=[],
     )
 
 
@@ -152,14 +151,6 @@ def _classify_and_extract(msg: AgentMessage) -> tuple[str, bool]:
     if msg.metadata.get("tool_calls"):
         return "tool_request", False
     return msg.role if msg.role in ("user", "assistant", "system") else "user", False
-
-
-def _detect_skill_routing(state: AgentState) -> str | None:
-    """Check if the last tool result is a skill routing call. Returns skill name or None."""
-    for msg in reversed(state.messages):
-        if msg.role == "tool" and msg.content.startswith(SKILL_ROUTING_PREFIX):
-            return msg.content[len(SKILL_ROUTING_PREFIX):].strip()
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -209,23 +200,51 @@ async def skills_reload():
     return {"status": "ok", "skill_count": count}
 
 
+# ---------------------------------------------------------------------------
+# Confirmation endpoints
+# ---------------------------------------------------------------------------
+
+@router.post("/confirm/{confirmation_id}")
+async def confirm_tool(confirmation_id: str, request: ConfirmRequest):
+    """Approve or reject a pending tool confirmation."""
+    found = confirmation_manager.resolve(confirmation_id, request.approved)
+    if not found:
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"Confirmation request '{confirmation_id}' not found or already resolved"},
+        )
+    return {
+        "status": "resolved",
+        "confirmation_id": confirmation_id,
+        "approved": request.approved,
+    }
+
+
+@router.get("/confirm/pending")
+async def list_pending_confirmations():
+    """List all pending confirmation requests."""
+    return {"pending": confirmation_manager.list_pending()}
+
+
+# ---------------------------------------------------------------------------
+# Chat endpoints
+# ---------------------------------------------------------------------------
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    """Non-streaming REST endpoint with two-phase skill routing."""
+    """Non-streaming REST endpoint."""
     session_id, state = await _get_or_create_session(
         request.session_id, provider=request.provider, model=request.model
     )
 
-    # Persist user message
     user_msg = AgentMessage(role="user", content=request.message)
     await MessageRepo.append(session_id, user_msg, kind="user")
     state.append(user_msg)
 
-    # --- Phase 1: LLM call with skill index ---
     provider = _resolve_provider(request)
 
     full_text = ""
-    async for msg in provider(state):
+    async for msg in provider(state, session_id=session_id):
         if msg.metadata.get("chunk"):
             continue
         kind, is_chunk = _classify_and_extract(msg)
@@ -252,25 +271,6 @@ async def chat(request: ChatRequest):
         if msg.role == "assistant":
             full_text = msg.content
 
-    # --- Phase 2: Check if skill routing was triggered ---
-    skill_name = _detect_skill_routing(state)
-    if skill_name:
-        logger.info("Skill routing detected: %s", skill_name)
-        try:
-            skill_provider = _build_skill_provider(request, skill_name)
-        except ValueError:
-            pass
-        else:
-            full_text = ""
-            async for msg in skill_provider(state):
-                if msg.metadata.get("chunk"):
-                    continue
-                kind, is_chunk = _classify_and_extract(msg)
-                await MessageRepo.append(session_id, msg, kind=kind, is_chunk=is_chunk)
-                state.append(msg)
-                if msg.role == "assistant":
-                    full_text = msg.content
-
     state.turns += 1
     await SessionRepo.set_turns(session_id, state.turns)
 
@@ -279,7 +279,7 @@ async def chat(request: ChatRequest):
 
 @router.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
-    """SSE streaming endpoint with two-phase skill routing."""
+    """SSE streaming endpoint."""
     session_id, state = await _get_or_create_session(
         request.session_id, provider=request.provider, model=request.model
     )
@@ -294,7 +294,7 @@ async def chat_stream(request: ChatRequest):
         yield {"event": "session", "data": json.dumps({"session_id": session_id})}
 
         full_text = ""
-        async for msg in provider(state):
+        async for msg in provider(state, session_id=session_id):
             status_data = msg.metadata.get("status")
             if status_data:
                 yield {"event": "status", "data": json.dumps(status_data)}
@@ -329,37 +329,6 @@ async def chat_stream(request: ChatRequest):
             state.append(msg)
             if msg.role == "assistant":
                 full_text = msg.content
-
-        # --- Phase 2: skill routing ---
-        skill_name = _detect_skill_routing(state)
-        if skill_name:
-            logger.info("Skill routing detected (stream): %s", skill_name)
-            yield {
-                "event": "status",
-                "data": json.dumps({"status": "skill_routing", "skill": skill_name}),
-            }
-            try:
-                skill_provider = _build_skill_provider(request, skill_name)
-            except ValueError:
-                pass
-            else:
-                full_text = ""
-                async for msg in skill_provider(state):
-                    status_data = msg.metadata.get("status")
-                    if status_data:
-                        yield {"event": "status", "data": json.dumps(status_data)}
-                        continue
-
-                    if msg.metadata.get("chunk"):
-                        full_text += msg.content
-                        yield {"event": "chunk", "data": json.dumps({"content": msg.content})}
-                        continue
-
-                    kind, is_chunk = _classify_and_extract(msg)
-                    await MessageRepo.append(session_id, msg, kind=kind, is_chunk=is_chunk)
-                    state.append(msg)
-                    if msg.role == "assistant":
-                        full_text = msg.content
 
         state.turns += 1
         await SessionRepo.set_turns(session_id, state.turns)
@@ -397,7 +366,7 @@ class SyncMessagesRequest(BaseModel):
 
 @router.put("/session/{session_id}/messages")
 async def sync_messages(session_id: str, request: SyncMessagesRequest):
-    """Replace the messages for a session (used after frontend-side edits/deletions)."""
+    """Replace the messages for a session (used after frontend edits/deletions)."""
     agent_msgs = [
         AgentMessage(role=m.role, content=m.content) for m in request.messages
     ]

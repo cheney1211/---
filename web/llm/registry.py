@@ -163,7 +163,7 @@ def get_default_system_message() -> str:
     """Return the default system message from env."""
     return os.getenv(
         "SYSTEM_MESSAGE",
-        "你叫coco，根据用户给的消息，帮助用户解决问题，语气要温和。",
+        "你叫coco，根据用户给的消息，帮助用户解决问题，能用工具解决的问题都必须使用工具，语气要温和。",
     )
 
 

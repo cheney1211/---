@@ -54,9 +54,24 @@ export default function ChatMessage({
   }, [isEditing]);
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(content);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      if (navigator.clipboard) {
+        await navigator.clipboard.writeText(content);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = content;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // clipboard not available
+    }
   };
 
   const handleTextareaInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -107,13 +122,13 @@ export default function ChatMessage({
               rows={1}
             />
             <div className="chat-edit-actions">
-              <button className="chat-edit-cancel" onClick={onEditCancel} title="取消">
+              <button className="chat-edit-cancel" onClick={onEditCancel} title="Cancel">
                 <X size={14} />
-                <span>取消</span>
+                <span>Cancel</span>
               </button>
-              <button className="chat-edit-send" onClick={handleSendEdit} title="发送">
+              <button className="chat-edit-send" onClick={handleSendEdit} title="Send">
                 <Send size={14} />
-                <span>发送</span>
+                <span>Send</span>
               </button>
             </div>
           </div>
@@ -129,18 +144,18 @@ export default function ChatMessage({
 
             {!selectMode && content && !isStreaming && (
               <div className="chat-bubble-actions">
-                <button className="chat-action-btn" onClick={handleCopy} title="复制">
+                <button className="chat-action-btn" onClick={handleCopy} title="Copy">
                   {copied ? <Check size={14} /> : <Copy size={14} />}
                 </button>
 
                 {editable && onEditStart && (
-                  <button className="chat-action-btn" onClick={onEditStart} title="编辑">
+                  <button className="chat-action-btn" onClick={onEditStart} title="Edit">
                     <Pencil size={14} />
                   </button>
                 )}
 
                 {onDelete && (
-                  <button className="chat-action-btn danger" onClick={onDelete} title="删除">
+                  <button className="chat-action-btn danger" onClick={onDelete} title="Delete">
                     <Trash2 size={14} />
                   </button>
                 )}

@@ -1,10 +1,11 @@
 ﻿"""
-Tool package — provides a pluggable tool system for the assistant.
+Tool package - provides a pluggable tool system for the assistant.
 
 Importing this package auto-registers all built-in tools.
 """
 
 from .base import Tool
+from .confirmation import ConfirmationManager, ConfirmationRequest
 from .registry import (
     register,
     get_tool,
@@ -19,6 +20,8 @@ from . import builtin  # noqa: F401
 
 __all__ = [
     "Tool",
+    "ConfirmationManager",
+    "ConfirmationRequest",
     "register",
     "get_tool",
     "get_all_tools",

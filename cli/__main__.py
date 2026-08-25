@@ -14,8 +14,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from web.llm import get_provider, get_default_provider_name, get_default_system_message
-from assistant.tools import get_tools
+from web.llm import get_adapter, get_provider, get_default_provider_name, get_default_system_message
+from assistant.tools import get_tools, register as register_tool
+from assistant.tools.builtin.call_skill import CallSkillTool, configure as configure_call_skill
 from assistant.skills import build_skills_system_prompt
 from cli.runner import CLIRunner, AgentRunnerConfig
 
@@ -28,6 +29,11 @@ def main() -> None:
     stream = os.getenv("OPENAI_STREAM", "true").strip().lower() in {
         "1", "true", "yes",
     }
+
+    # Configure call_skill tool with LLM and register it
+    adapter = get_adapter(provider_name)
+    configure_call_skill(adapter.llm, base_system)
+    register_tool(CallSkillTool())
 
     tools = get_tools()
     provider = get_provider(provider_name, system_message=system_message, tools=tools)

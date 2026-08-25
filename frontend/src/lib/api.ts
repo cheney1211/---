@@ -1,4 +1,4 @@
-﻿const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000/api";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000/api";
 
 export interface ChatMessage {
   role: "user" | "assistant";
@@ -72,7 +72,31 @@ export type AgentStatus =
   | { status: "thinking" }
   | { status: "generating" }
   | { status: "tool_start"; name: string; args: unknown }
-  | { status: "tool_end"; name: string; output: string };
+  | { status: "tool_end"; name: string; output: string }
+  | {
+      status: "confirmation_required";
+      confirmation_id: string;
+      tool_name: string;
+      tool_args: Record<string, unknown>;
+      description: string;
+    };
+
+// ---- Confirmation API ----
+
+/** Approve or reject a pending tool confirmation. */
+export async function resolveConfirmation(
+  confirmationId: string,
+  approved: boolean
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/confirm/${confirmationId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ approved }),
+  });
+  if (!res.ok) throw new Error(`Confirmation request failed: ${res.status}`);
+}
+
+// ---- SSE streaming ----
 
 /** SSE streaming chat with rich status events. */
 export function sendMessageStream(

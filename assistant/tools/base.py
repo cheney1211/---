@@ -1,11 +1,14 @@
-"""
+﻿"""
 Base class for all tools, built on LangChain's BaseTool.
 
 Subclasses must define:
-  - name: str              — 工具名称（LLM 用来调用）
-  - description: str       — 工具描述（展示给 LLM）
-  - args_schema: Type[BaseModel] — Pydantic 模型，定义输入参数
-  - _run(**kwargs) -> str  — 实际执行逻辑
+  - name: str              -- tool name (used by LLM to call)
+  - description: str       -- tool description (shown to LLM)
+  - args_schema: Type[BaseModel] -- Pydantic model for input parameters
+  - _run(**kwargs) -> str  -- actual execution logic
+
+Optional:
+  - requires_confirmation: bool -- set True for dangerous operations
 """
 
 from __future__ import annotations
@@ -13,13 +16,17 @@ from __future__ import annotations
 from typing import Any, Type
 
 from langchain_core.tools import BaseTool
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Tool(BaseTool):
-    """LangChain BaseTool 的子类基类。
+    """LangChain BaseTool subclass base class.
 
-    所有工具继承此类后，只需声明 name / description / args_schema，
-    并实现 _run() 即可。bind_tools() 可以直接接受 Tool 实例。
+    All tools inherit this class, just declare name / description / args_schema,
+    and implement _run(). bind_tools() can directly accept Tool instances.
     """
-    pass
+    requires_confirmation: bool = Field(
+        default=False,
+        description="Whether this tool requires human confirmation before execution. "
+                    "Set to True for dangerous operations like file writes or shell commands.",
+    )
