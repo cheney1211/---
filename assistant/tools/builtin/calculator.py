@@ -1,5 +1,5 @@
-"""
-Calculator tool — safely evaluate mathematical expressions.
+﻿"""
+Calculator tool -- safely evaluate mathematical expressions.
 
 Uses Python's eval() with a restricted namespace (only math functions).
 """
@@ -37,7 +37,7 @@ class CalculatorTool(Tool):
     name: str = "calculate"
     description: str = "计算数学表达式，支持加减乘除、三角函数、对数、幂运算等。"
     args_schema: Type[BaseModel] = CalculatorInput
-    requires_confirmation: bool = True
+    requires_confirmation: bool = False
 
     def _run(self, expression: str) -> str:
         try:

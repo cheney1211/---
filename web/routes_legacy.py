@@ -2,6 +2,7 @@
 
 Provides:
   - GET  /api/health              -- health check
+  - GET  /api/sessions             -- list all sessions from DB
   - POST /api/chat                -- non-streaming REST endpoint
   - POST /api/chat/stream         -- SSE streaming endpoint
   - GET  /api/providers           -- list LLM providers
@@ -71,6 +72,13 @@ class SessionHistory(BaseModel):
     session_id: str
     messages: List[MessageOut]
     turns: int
+
+
+class SessionSummary(BaseModel):
+    id: str
+    title: str | None
+    turns: int
+    updated_at: str | None
 
 
 class SkillSummary(BaseModel):
@@ -344,6 +352,21 @@ async def chat_stream(request: ChatRequest):
 # ---------------------------------------------------------------------------
 # Session management
 # ---------------------------------------------------------------------------
+
+@router.get("/sessions", response_model=List[SessionSummary])
+async def list_sessions():
+    """Return all sessions stored in the database."""
+    rows = await SessionRepo.list_all()
+    return [
+        SessionSummary(
+            id=r.id,
+            title=r.title,
+            turns=r.turns,
+            updated_at=r.updated_at.isoformat() if r.updated_at else None,
+        )
+        for r in rows
+    ]
+
 
 @router.get("/session/{session_id}/history", response_model=SessionHistory)
 async def get_history(session_id: str):

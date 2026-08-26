@@ -1131,6 +1131,17 @@ body {
   font-size: 15px;
 }
 
+.confirmation-timer {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
 .confirmation-body {
   padding: 16px 20px;
 }
@@ -1201,4 +1212,12 @@ body {
 
 .confirmation-btn.approve:hover {
   background: #15803d;
+}
+
+.confirmation-expired {
+  padding: 14px 20px;
+  border-top: 1px solid var(--border, #333);
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-muted);
 }

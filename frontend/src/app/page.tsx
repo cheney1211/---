@@ -14,6 +14,7 @@ import {
   deleteSession as apiDeleteSession,
   syncSessionMessages,
   resolveConfirmation,
+  listSessions,
   type AgentStatus,
 } from "@/lib/api";
 
@@ -104,9 +105,33 @@ export default function Home() {
 
   // ---- init ----
   useEffect(() => {
-    setSessions(loadSessions());
+    const localSessions = loadSessions();
+    setSessions(localSessions);
     checkHealth().then(setIsConnected);
     const timer = setInterval(() => checkHealth().then(setIsConnected), 30000);
+
+    // Sync with backend DB: recover sessions missing from localStorage
+    listSessions()
+      .then((remote) => {
+        if (remote.length === 0) return;
+        setSessions((prev) => {
+          const known = new Set(prev.map((s) => s.id));
+          const merged = [...prev];
+          for (const r of remote) {
+            if (!known.has(r.id)) {
+              merged.push({
+                id: r.id,
+                title: r.title ?? "Untitled",
+                updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : Date.now(),
+                messageCount: r.turns * 2,
+              });
+            }
+          }
+          return merged;
+        });
+      })
+      .catch(() => {});
+
     return () => clearInterval(timer);
   }, []);
 
@@ -241,6 +266,10 @@ export default function Home() {
     }
   }, [confirmation]);
 
+  const handleConfirmExpire = useCallback(() => {
+    setConfirmation(null);
+  }, []);
+
   // ---- select mode ----
   const handleEnterSelectMode = useCallback(() => {
     if (isStreaming) return;
@@ -354,6 +383,9 @@ export default function Home() {
               description: status.description,
             });
             setAgentStatus(status);
+          } else if (status.status === "confirmation_expired") {
+            setConfirmation(null);
+            setAgentStatus(null);
           } else {
             setAgentStatus(status);
           }
@@ -391,7 +423,7 @@ export default function Home() {
 
       abortRef.current = abort;
     },
-    [isStreaming, sessionId, messages, updateSessionMeta, adjustSessionMessageCount]
+    [isStreaming, sessionId, messages, updateSessionMeta, adjustSessionMessageCount, setConfirmation]
   );
 
   // ---- latest user msg ----
@@ -436,6 +468,9 @@ export default function Home() {
               description: status.description,
             });
             setAgentStatus(status);
+          } else if (status.status === "confirmation_expired") {
+            setConfirmation(null);
+            setAgentStatus(null);
           } else {
             setAgentStatus(status);
           }
@@ -610,6 +645,7 @@ export default function Home() {
           data={confirmation}
           onApprove={handleConfirmApprove}
           onReject={handleConfirmReject}
+          onExpire={handleConfirmExpire}
         />
       )}
     </div>

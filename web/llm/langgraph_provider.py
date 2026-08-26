@@ -290,6 +290,18 @@ class LangGraphProvider:
                                     req.confirmation_id, timeout=300.0
                                 )
                             except TimeoutError:
+                                yield AgentMessage(
+                                    role="assistant",
+                                    content="",
+                                    metadata={
+                                        "chunk": True,
+                                        "status": {
+                                            "status": "confirmation_expired",
+                                            "confirmation_id": req.confirmation_id,
+                                            "tool_name": tc["name"],
+                                        },
+                                    },
+                                )
                                 approved = False
 
                             logger.info("[__call__] Decision: %s", approved)

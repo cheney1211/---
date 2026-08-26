@@ -1,5 +1,19 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000/api";
 
+export interface SessionSummary {
+  id: string;
+  title: string | null;
+  turns: number;
+  updated_at: string | null;
+}
+
+/** List all sessions from the backend database */
+export async function listSessions(): Promise<SessionSummary[]> {
+  const res = await fetch(`${API_BASE}/sessions`);
+  if (!res.ok) throw new Error(`Failed to list sessions: ${res.status}`);
+  return res.json();
+}
+
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
@@ -79,6 +93,11 @@ export type AgentStatus =
       tool_name: string;
       tool_args: Record<string, unknown>;
       description: string;
+    }
+  | {
+      status: "confirmation_expired";
+      confirmation_id: string;
+      tool_name: string;
     };
 
 // ---- Confirmation API ----

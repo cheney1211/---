@@ -56,6 +56,14 @@ class SessionRepo:
             return True
 
     @staticmethod
+    async def list_all() -> List[SessionRow]:
+        """Return every session ordered by most recently updated."""
+        async with session_scope() as s:
+            stmt = select(SessionRow).order_by(SessionRow.updated_at.desc())
+            result = await s.execute(stmt)
+            return list(result.scalars().all())
+
+    @staticmethod
     async def set_turns(session_id: str, turns: int) -> None:
         async with session_scope() as s:
             row = await s.get(SessionRow, session_id)
