@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from .base import LLMAdapter
-from .provider import AssistantLLMProvider, build_agent_provider
+from .langgraph_provider import LangGraphProvider
 
 
 # ---------------------------------------------------------------------------
@@ -123,10 +123,35 @@ def get_provider(
     *,
     model: str | None = None,
     system_message: str | None = None,
-) -> AssistantLLMProvider:
-    """Build an agent-ready provider for the given provider name."""
+    tools: list | None = None,
+    **kwargs,
+) -> LangGraphProvider:
+    """Build an agent-ready provider backed by LangGraph.
+
+    对于有 LLM 的适配器（openai / deepseek / ollama），返回 LangGraphProvider。
+    对于 dummy 适配器，返回一个简单的回显 provider。
+    """
+    if name == "dummy":
+        return _build_dummy_provider(system_message=system_message)
+
     adapter = get_adapter(name, model=model)
-    return build_agent_provider(adapter, system_message=system_message)
+    return LangGraphProvider(
+        llm=adapter.llm,
+        tools=tools or [],
+        system_message=system_message,
+    )
+
+
+def _build_dummy_provider(*, system_message: str | None = None) -> LangGraphProvider:
+    """构造一个不依赖 LLM 的回显 provider，用于本地测试。"""
+    from langchain_core.language_models import FakeListChatModel
+
+    fake_llm = FakeListChatModel(responses=["(dummy) 收到你的消息了。"])
+    return LangGraphProvider(
+        llm=fake_llm,
+        tools=[],
+        system_message=system_message,
+    )
 
 
 def get_default_provider_name() -> str:
@@ -138,7 +163,7 @@ def get_default_system_message() -> str:
     """Return the default system message from env."""
     return os.getenv(
         "SYSTEM_MESSAGE",
-        "你叫coco，根据用户给的消息，帮助用户解决问题，语气要温和。",
+        "你叫coco，根据用户给的消息，帮助用户解决问题，能用工具解决的问题都必须使用工具，语气要温和。",
     )
 
 

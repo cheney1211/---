@@ -1,4 +1,18 @@
-﻿const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000/api";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000/api";
+
+export interface SessionSummary {
+  id: string;
+  title: string | null;
+  turns: number;
+  updated_at: string | null;
+}
+
+/** List all sessions from the backend database */
+export async function listSessions(): Promise<SessionSummary[]> {
+  const res = await fetch(`${API_BASE}/sessions`);
+  if (!res.ok) throw new Error(`Failed to list sessions: ${res.status}`);
+  return res.json();
+}
 
 export interface ChatMessage {
   role: "user" | "assistant";
@@ -70,8 +84,38 @@ export async function sendMessage(
 // ---- Status types ----
 export type AgentStatus =
   | { status: "thinking" }
+  | { status: "generating" }
   | { status: "tool_start"; name: string; args: unknown }
-  | { status: "tool_end"; name: string; output: string };
+  | { status: "tool_end"; name: string; output: string }
+  | {
+      status: "confirmation_required";
+      confirmation_id: string;
+      tool_name: string;
+      tool_args: Record<string, unknown>;
+      description: string;
+    }
+  | {
+      status: "confirmation_expired";
+      confirmation_id: string;
+      tool_name: string;
+    };
+
+// ---- Confirmation API ----
+
+/** Approve or reject a pending tool confirmation. */
+export async function resolveConfirmation(
+  confirmationId: string,
+  approved: boolean
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/confirm/${confirmationId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ approved }),
+  });
+  if (!res.ok) throw new Error(`Confirmation request failed: ${res.status}`);
+}
+
+// ---- SSE streaming ----
 
 /** SSE streaming chat with rich status events. */
 export function sendMessageStream(
@@ -101,41 +145,42 @@ export function sendMessageStream(
         return;
       }
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
+     const reader = res.body.getReader();
+     const decoder = new TextDecoder();
+     let buffer = "";
+     let currentEvent = "";
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+     while (true) {
+       const { done, value } = await reader.read();
+       if (done) break;
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
+       buffer += decoder.decode(value, { stream: true });
+       const lines = buffer.split("\n");
+       buffer = lines.pop() || "";
 
-        let currentEvent = "";
-        for (const line of lines) {
-          if (line.startsWith("event:")) {
-            currentEvent = line.slice(6).trim();
-          } else if (line.startsWith("data:")) {
-            const data = line.slice(5).trim();
-            if (!data) continue;
-            try {
-              const parsed = JSON.parse(data);
-              if (currentEvent === "session") {
-                callbacks.onSession?.(parsed.session_id);
-              } else if (currentEvent === "status") {
-                callbacks.onStatus?.(parsed as AgentStatus);
-              } else if (currentEvent === "chunk") {
-                callbacks.onChunk?.(parsed.content);
-              } else if (currentEvent === "done") {
-                callbacks.onDone?.(parsed.content, parsed.session_id);
+         for (const line of lines) {
+            if (line.startsWith("event:")) {
+              currentEvent = line.slice(6).trim();
+            } else if (line.startsWith("data:")) {
+              const data = line.slice(5).trim();
+              if (!data) continue;
+              try {
+                const parsed = JSON.parse(data);
+                if (currentEvent === "session") {
+                  callbacks.onSession?.(parsed.session_id);
+               } else if (currentEvent === "status") {
+                 callbacks.onStatus?.(parsed as AgentStatus);
+                 await new Promise((r) => setTimeout(r, 0));
+               } else if (currentEvent === "chunk") {
+                  callbacks.onChunk?.(parsed.content);
+                } else if (currentEvent === "done") {
+                  callbacks.onDone?.(parsed.content, parsed.session_id);
+                }
+              } catch {
+                // skip malformed JSON
               }
-            } catch {
-              // skip malformed JSON
             }
           }
-        }
       }
     } catch (err: unknown) {
       if (err instanceof DOMException && err.name === "AbortError") return;
