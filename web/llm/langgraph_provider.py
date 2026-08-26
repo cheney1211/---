@@ -41,6 +41,8 @@ confirmation_manager = ConfirmationManager()
 class LangGraphProvider:
     """Agent provider with LangGraph interrupt-based confirmation."""
 
+    _instances: List["LangGraphProvider"] = []
+
     def __init__(
         self,
         llm: BaseChatModel,
@@ -61,6 +63,7 @@ class LangGraphProvider:
         self._conn = None
         self._checkpointer = None
         self._graph = None
+        LangGraphProvider._instances.append(self)
         logger.info("LangGraphProvider initialized with %d tools: %s",
                      len(self._tools), [t.name for t in self._tools])
         logger.info("Tools requiring confirmation: %s",
@@ -69,6 +72,18 @@ class LangGraphProvider:
     # ------------------------------------------------------------------
     # Graph construction
     # ------------------------------------------------------------------
+
+    @classmethod
+    async def close_all(cls) -> None:
+        """Close all aiosqlite connections. Called during app shutdown."""
+        for inst in cls._instances:
+            if inst._conn is not None:
+                try:
+                    await inst._conn.close()
+                except Exception:
+                    pass
+                inst._conn = None
+        cls._instances.clear()
 
     def _build_graph(self, checkpointer):
         llm_with_tools = (

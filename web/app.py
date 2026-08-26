@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .routes import router as chat_router
-from storage import init_db, recover_pending_tool_calls
+from storage import init_db, recover_pending_tool_calls, get_engine
 
 # Load .env from project root
 _ROOT = Path(__file__).resolve().parent.parent
@@ -38,7 +38,12 @@ async def lifespan(app: FastAPI):
         )
     logger.info("Database ready")
     yield
-    # ---- shutdown (nothing special for now) ----
+    # ---- shutdown ----
+    from web.llm.langgraph_provider import LangGraphProvider
+    await LangGraphProvider.close_all()
+    engine = get_engine()
+    await engine.dispose()
+    logger.info("Shutdown complete")
 
 
 def create_app() -> FastAPI:
