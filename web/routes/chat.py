@@ -25,6 +25,7 @@ class ChatRequest(BaseModel):
     session_id: str | None = None
     provider: str | None = None
     model: str | None = None
+    mode: str = "confirm"
 
 
 class ChatResponse(BaseModel):
@@ -48,7 +49,7 @@ async def chat(request: ChatRequest):
     )
     reply = await process_message(
         session_id, state, request.message,
-        provider=request.provider, model=request.model,
+        provider=request.provider, model=request.model, mode=request.mode,
     )
     return ChatResponse(reply=reply, session_id=session_id)
 
@@ -63,7 +64,7 @@ async def chat_stream(request: ChatRequest):
     async def event_generator():
         async for event in process_message_stream(
             session_id, state, request.message,
-            provider=request.provider, model=request.model,
+            provider=request.provider, model=request.model, mode=request.mode,
         ):
             yield {
                 "event": event["event"],

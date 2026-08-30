@@ -10,6 +10,7 @@ from assistant.tools import get_tools, register as register_tool
 from assistant.tools.builtin.call_skill import CallSkillTool, configure as configure_call_skill
 from assistant.skills import build_skills_system_prompt
 from storage.repositories import SessionRepo, MessageRepo, PendingToolRepo
+from assistant.tools.workspace import get_workspace_root, get_platform_hint
 from web.llm import get_adapter, get_provider, get_default_provider_name, get_default_system_message
 from web.utils.message_utils import classify_and_extract
 
@@ -29,19 +30,29 @@ async def get_or_create_session(
     return sid, state
 
 
-def resolve_provider(*, provider: str | None = None, model: str | None = None):
+def resolve_provider(*, provider: str | None = None, model: str | None = None, mode: str = "confirm"):
     """Build provider with tools (including call_skill) and skill index."""
     provider_name = provider or get_default_provider_name()
     base_system = get_default_system_message()
     skill_index = build_skills_system_prompt()
     system_message = f"{base_system}\n\n{skill_index}" if skill_index else base_system
 
+    # Inject workspace and platform context
+    workspace = get_workspace_root()
+    workspace_hint = (
+        f"\n\n工作区信息:\n"
+        f"- 工作区目录: {workspace}\n"
+        f"- {get_platform_hint()}\n"
+        f"- 文件读写限制在工作区内，读取工作区外的文件需要用户确认。"
+    )
+    system_message += workspace_hint
+
     adapter = get_adapter(provider_name, model=model)
     configure_call_skill(adapter.llm, base_system)
     register_tool(CallSkillTool())
 
     tools = get_tools()
-    return get_provider(provider_name, model=model, system_message=system_message, tools=tools)
+    return get_provider(provider_name, model=model, system_message=system_message, tools=tools, confirmation_mode=mode)
 
 
 async def persist_message(session_id: str, msg: AgentMessage, *, kind: str = "user") -> None:
@@ -74,13 +85,14 @@ async def process_message(
     *,
     provider: str | None = None,
     model: str | None = None,
+    mode: str = "confirm",
 ) -> str:
     """Non-streaming: persist user msg, run provider, persist all responses, return reply."""
     user_msg = AgentMessage(role="user", content=user_text)
     await persist_message(session_id, user_msg, kind="user")
     state.append(user_msg)
 
-    llm_provider = resolve_provider(provider=provider, model=model)
+    llm_provider = resolve_provider(provider=provider, model=model, mode=mode)
 
     full_text = ""
     async for msg in llm_provider(state, session_id=session_id):
@@ -104,13 +116,14 @@ async def process_message_stream(
     *,
     provider: str | None = None,
     model: str | None = None,
+    mode: str = "confirm",
 ) -> AsyncIterable[dict]:
     """Streaming: yields SSE event dicts (session / status / chunk / done)."""
     user_msg = AgentMessage(role="user", content=user_text)
     await persist_message(session_id, user_msg, kind="user")
     state.append(user_msg)
 
-    llm_provider = resolve_provider(provider=provider, model=model)
+    llm_provider = resolve_provider(provider=provider, model=model, mode=mode)
 
     yield {"event": "session", "data": {"session_id": session_id}}
 

@@ -286,6 +286,117 @@ body {
   box-shadow: 0 0 6px rgba(52, 211, 153, 0.4);
 }
 
+/* ===== Workspace Selector ===== */
+.workspace-selector {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  margin-right: 12px;
+  min-width: 0;
+}
+
+.workspace-icon {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.workspace-path-btn {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-family: "SF Mono", "Cascadia Code", "Fira Code", Consolas, monospace;
+  padding: 3px 8px;
+  cursor: pointer;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+
+.workspace-path-btn:hover {
+  background: var(--bg-tertiary);
+  border-color: var(--border);
+  color: var(--text-primary);
+}
+
+.workspace-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.workspace-input {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: "SF Mono", "Cascadia Code", "Fira Code", Consolas, monospace;
+  padding: 3px 8px;
+  width: 260px;
+  outline: none;
+}
+
+.workspace-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.workspace-btn.save {
+  background: var(--accent);
+  color: #fff;
+}
+
+.workspace-btn.save:hover {
+  background: var(--accent-hover);
+}
+
+.workspace-btn.browse {
+  background: var(--bg-elevated);
+  color: var(--accent);
+  border: 1px solid var(--border);
+}
+
+.workspace-btn.browse:hover {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.workspace-btn.cancel {
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+}
+
+.workspace-btn.cancel:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+.workspace-error {
+  color: var(--danger);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+@media (max-width: 768px) {
+  .workspace-selector {
+    display: none;
+  }
+}
+
 /* ================================================================
    Messages Area
    ================================================================ */
@@ -690,6 +801,118 @@ body {
   background: #dc2626;
 }
 
+/* ===== Mode Switcher (Dropdown) ===== */
+.mode-switcher {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.mode-switcher-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+  font-family: inherit;
+}
+
+.mode-switcher-trigger:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.mode-switcher-trigger:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.mode-switcher-trigger-label {
+  line-height: 1;
+}
+
+.mode-switcher-arrow {
+  color: var(--text-muted);
+  transition: transform 0.15s;
+}
+
+.mode-switcher-arrow.open {
+  transform: rotate(180deg);
+}
+
+.mode-switcher-dropdown {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  min-width: 160px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  padding: 4px;
+  z-index: 100;
+  animation: modeDropdownIn 0.12s ease;
+}
+
+@keyframes modeDropdownIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.mode-switcher-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: calc(var(--radius-md) - 2px);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.1s;
+  white-space: nowrap;
+  font-family: inherit;
+  text-align: left;
+}
+
+.mode-switcher-option:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.mode-switcher-option.active {
+  color: var(--accent);
+}
+
+.mode-switcher-option-label {
+  flex: 1;
+  line-height: 1;
+}
+
+.mode-switcher-check {
+  font-size: 12px;
+  color: var(--accent);
+}
+
+@media (max-width: 640px) {
+  .mode-switcher-trigger-label {
+    display: none;
+  }
+  .mode-switcher-trigger {
+    padding: 5px 7px;
+  }
+}
+
 /* ================================================================
    Status Indicator
    ================================================================ */
@@ -1085,16 +1308,16 @@ body {
   cursor: not-allowed;
 }
 
-/* ===== Confirmation Dialog ===== */
+/* ===== Confirmation Dialog (Bottom Sheet) ===== */
 .confirmation-overlay {
   position: fixed;
   inset: 0;
   z-index: 1000;
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(4px);
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(2px);
   animation: fadeIn 0.15s ease;
 }
 
@@ -1103,20 +1326,23 @@ body {
   to { opacity: 1; }
 }
 
-@keyframes slideUp {
-  from { opacity: 0; transform: translateY(12px) scale(0.97); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
+@keyframes slideUpFromBottom {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
 }
 
 .confirmation-dialog {
   background: var(--bg-secondary, #1e1e2e);
   border: 1px solid var(--border, #333);
-  border-radius: 12px;
-  width: 90%;
-  max-width: 480px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
-  animation: slideUp 0.2s ease;
+  border-bottom: none;
+  border-radius: 16px 16px 0 0;
+  width: 100%;
+  max-width: 560px;
+  box-shadow: 0 -8px 40px rgba(0, 0, 0, 0.3);
+  animation: slideUpFromBottom 0.25s cubic-bezier(0.16, 1, 0.3, 1);
   overflow: hidden;
+  max-height: 80vh;
+  overflow-y: auto;
 }
 
 .confirmation-header {

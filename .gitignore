@@ -5,3 +5,5 @@ __pycache__/
 *.pyo
 tmp_*.py
 data/小助手.md
+.zcode/
+.vscode/

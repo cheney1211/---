@@ -50,11 +50,13 @@ class LangGraphProvider:
         tools: Optional[List[BaseTool]] = None,
         system_message: str | None = None,
         max_tool_rounds: int = 5,
+        confirmation_mode: str = "confirm",
     ) -> None:
         self._llm = llm
         self._tools = tools or []
         self._system_message = system_message
         self._max_tool_rounds = max_tool_rounds
+        self._confirmation_mode = confirmation_mode
         self._tool_map: Dict[str, BaseTool] = {t.name: t for t in self._tools}
         _ROOT = Path(__file__).resolve().parent.parent.parent
         _ckpt_path = _ROOT / "data" / "langgraph_checkpoints.db"
@@ -90,6 +92,7 @@ class LangGraphProvider:
             self._llm.bind_tools(self._tools) if self._tools else self._llm
         )
         tool_map = self._tool_map
+        confirmation_mode = self._confirmation_mode
 
         def agent_node(state: MessagesState) -> dict:
             logger.info("[agent_node] Invoking LLM with %d messages", len(state["messages"]))
@@ -133,9 +136,23 @@ class LangGraphProvider:
             if not isinstance(last_msg, AIMessage) or not last_msg.tool_calls:
                 logger.info("[route_after_agent] No tool_calls -> END")
                 return END
+
+            if confirmation_mode == "full_access":
+                logger.info("[route_after_agent] full_access mode -> tools (skip all confirmation)")
+                return "tools"
+
+            if confirmation_mode == "plan":
+                logger.info("[route_after_agent] plan mode -> human_review (confirm all)")
+                return "human_review"
+
+            # "confirm" mode: check dynamic confirmation per tool
             for tc in last_msg.tool_calls:
                 tool = tool_map.get(tc["name"])
-                if getattr(tool, "requires_confirmation", False):
+                if tool is None:
+                    continue
+                # Use dynamic check (supports context-dependent confirmation, e.g. workspace boundaries)
+                needs_confirm = tool.check_requires_confirmation(**tc.get("args", {}))
+                if needs_confirm:
                     logger.info("[route_after_agent] Tool '%s' needs confirmation -> human_review", tc["name"])
                     return "human_review"
             logger.info("[route_after_agent] No confirmation needed -> tools")
