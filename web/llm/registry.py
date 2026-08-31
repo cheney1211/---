@@ -1,110 +1,87 @@
 """
-Multi-model registry.
+多模型注册中心。
 
-Central place for registering and resolving LLM adapters by provider name.
+支持两种 provider 类型：
+1. 内置特殊 provider（ollama、dummy）—— 有独立适配器逻辑
+2. 自定义 OpenAI 兼容 provider —— 通过环境变量动态配置，无需预注册
 
-Usage:
-    from web.llm.registry import get_adapter, get_provider
-
-    adapter = get_adapter("openai")
-    provider = get_provider("openai", system_message="...")
-
-To add a new provider:
-    from web.llm.registry import register
-    register("my_provider", factory=my_factory, env_prefix="MY_PROVIDER_")
+用户只需设置环境变量即可添加任意 OpenAI 兼容模型：
+    LLM_PROVIDER=my-model
+    my-model_API_KEY=sk-xxx
+    my-model_MODEL=gpt-4o
+    my-model_BASE_URL=https://api.example.com/v1
 """
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List
 
 from .base import LLMAdapter
 from .langgraph_provider import LangGraphProvider
 
-
-# ---------------------------------------------------------------------------
-# Provider spec
-# ---------------------------------------------------------------------------
-
-@dataclass
-class ProviderSpec:
-    """Registration entry for a single provider."""
-    name: str
-    factory: Callable[..., LLMAdapter]
-    env_prefix: str = ""
-    default_model: str = ""
-    required_env_keys: List[str] = field(default_factory=list)
-    optional_env_keys: List[str] = field(default_factory=list)
-    description: str = ""
-
-
-# Global registry
-_registry: Dict[str, ProviderSpec] = {}
-
-
-def register(spec: ProviderSpec) -> None:
-    """Register a provider spec."""
-    _registry[spec.name] = spec
-
-
-def get_spec(name: str) -> ProviderSpec:
-    if name not in _registry:
-        available = ", ".join(sorted(_registry)) or "(none)"
-        raise ValueError(f"Unknown provider: {name!r}. Available: {available}")
-    return _registry[name]
-
-
-def list_providers() -> List[Dict[str, Any]]:
-    """Return a list of registered provider summaries."""
-    result = []
-    for name, spec in sorted(_registry.items()):
-        env_keys = spec.required_env_keys + spec.optional_env_keys
-        result.append({
-            "name": name,
-            "description": spec.description,
-            "default_model": spec.default_model,
-            "env_keys": env_keys,
-        })
-    return result
+# 项目根目录（web/llm/ -> web/ -> 项目根）
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+_DEFAULT_PROMPT_FILE = _PROJECT_ROOT / "assistant" / "prompts" / "system_prompt.md"
 
 
 # ---------------------------------------------------------------------------
-# Env helpers
+# 环境变量读取
 # ---------------------------------------------------------------------------
 
-def _read_env(spec: ProviderSpec, *, model_override: str | None = None) -> dict:
-    """Read environment variables for a provider and return a config dict."""
-    prefix = spec.env_prefix
-    cfg: dict = {}
+def _read_env(name: str) -> dict:
+    """读取 {NAME}_API_KEY、{NAME}_MODEL、{NAME}_BASE_URL 环境变量。
 
-    # Required keys
-    for key in spec.required_env_keys:
-        val = os.getenv(f"{prefix}{key}")
-        if not val:
-            raise RuntimeError(
-                f"Environment variable {prefix}{key} is not set "
-                f"(required for provider '{spec.name}')"
-            )
-        cfg[key.lower()] = val
+    对于自定义 provider，API_KEY 必填；MODEL 和 BASE_URL 可选。
+    """
+    prefix = name.upper()
+    api_key = os.getenv(f"{prefix}_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            f"环境变量 {prefix}_API_KEY 未设置（provider '{name}' 需要）"
+        )
+    return {
+        "api_key": api_key,
+        "model": os.getenv(f"{prefix}_MODEL") or "",
+        "base_url": os.getenv(f"{prefix}_BASE_URL") or None,
+    }
 
-    # Optional keys
-    for key in spec.optional_env_keys:
-        cfg[key.lower()] = os.getenv(f"{prefix}{key}") or None
 
-    # Model: override > env > default
-    cfg["model"] = (
-        model_override
-        or os.getenv(f"{prefix}MODEL")
-        or spec.default_model
+# ---------------------------------------------------------------------------
+# 内置适配器构建
+# ---------------------------------------------------------------------------
+
+def _build_openai_adapter(name: str) -> LLMAdapter:
+    """从环境变量构建 OpenAI 兼容适配器。"""
+    from .openai_adapter import OpenAIAdapter
+
+    cfg = _read_env(name)
+    return OpenAIAdapter(
+        model=cfg["model"],
+        api_key=cfg["api_key"],
+        base_url=cfg.get("base_url"),
     )
 
-    return cfg
+
+def _build_ollama_adapter() -> LLMAdapter:
+    """构建 Ollama 适配器（不需要 API key）。"""
+    from .ollama_adapter import OllamaAdapter
+
+    base_url = os.getenv("OLLAMA_BASE_URL") or None
+    model = os.getenv("OLLAMA_MODEL") or "qwen2.5:7b"
+    return OllamaAdapter(model=model, base_url=base_url)
+
+
+def _build_dummy_adapter() -> LLMAdapter:
+    """构建测试用回显适配器。"""
+    from .dummy_adapter import DummyAdapter
+
+    return DummyAdapter()
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# 适配器解析
 # ---------------------------------------------------------------------------
 
 def get_adapter(
@@ -112,10 +89,32 @@ def get_adapter(
     *,
     model: str | None = None,
 ) -> LLMAdapter:
-    """Build an adapter instance for the given provider name."""
-    spec = get_spec(name)
-    cfg = _read_env(spec, model_override=model)
-    return spec.factory(cfg)
+    """根据 provider 名称构建适配器实例。
+
+    内置 provider（ollama、dummy）使用专用适配器；
+    其他名称视为 OpenAI 兼容 provider，从 {NAME}_* 环境变量读取配置。
+    """
+    name = name.strip().lower()
+
+    if name == "dummy":
+        return _build_dummy_adapter()
+
+    if name == "ollama":
+        return _build_ollama_adapter()
+
+    # 所有其他 provider：OpenAI 兼容，动态读取环境变量
+    adapter = _build_openai_adapter(name)
+    # 如果调用方指定了 model 覆盖，需要替换底层 LLM 的 model
+    if model:
+        from .openai_adapter import OpenAIAdapter
+
+        cfg = _read_env(name)
+        adapter = OpenAIAdapter(
+            model=model,
+            api_key=cfg["api_key"],
+            base_url=cfg.get("base_url"),
+        )
+    return adapter
 
 
 def get_provider(
@@ -127,11 +126,7 @@ def get_provider(
     confirmation_mode: str = "confirm",
     **kwargs,
 ) -> LangGraphProvider:
-    """Build an agent-ready provider backed by LangGraph.
-
-    对于有 LLM 的适配器（openai / deepseek / ollama），返回 LangGraphProvider。
-    对于 dummy 适配器，返回一个简单的回显 provider。
-    """
+    """构建带 LangGraph 的 agent-ready provider。"""
     if name == "dummy":
         return _build_dummy_provider(system_message=system_message)
 
@@ -156,98 +151,61 @@ def _build_dummy_provider(*, system_message: str | None = None) -> LangGraphProv
     )
 
 
+# ---------------------------------------------------------------------------
+# Provider 信息
+# ---------------------------------------------------------------------------
+
 def get_default_provider_name() -> str:
-    """Return the default provider name from env or 'openai'."""
+    """返回默认 provider 名称（读取 LLM_PROVIDER 环境变量，默认 openai）。"""
     return os.getenv("LLM_PROVIDER", "openai").strip().lower()
 
 
 def get_default_system_message() -> str:
-    """Return the default system message from env."""
-    return os.getenv(
-        "SYSTEM_MESSAGE",
-        "你叫coco，根据用户给的消息，帮助用户解决问题，能用工具解决的问题都必须使用工具，语气要温和。",
-    )
+    """返回默认系统提示词。
+
+    从 SYSTEM_PROMPT_FILE 环境变量指定的文件读取，
+    未设置则读取 assistant/prompts/default.md。
+    """
+    prompt_path = os.getenv("SYSTEM_PROMPT_FILE")
+    prompt_file = Path(prompt_path) if prompt_path else _DEFAULT_PROMPT_FILE
+    try:
+        return prompt_file.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return "你叫coco，根据用户给的消息，帮助用户解决问题，能用工具解决的问题都必须使用工具，语气要温和。"
 
 
-# ---------------------------------------------------------------------------
-# Built-in factories
-# ---------------------------------------------------------------------------
+def list_providers() -> List[Dict[str, Any]]:
+    """返回当前可用的 provider 列表。
 
-def _openai_factory(cfg: dict) -> LLMAdapter:
-    from .openai_adapter import OpenAIAdapter
+    包含内置特殊 provider 和当前通过环境变量配置的默认 provider。
+    """
+    result = [
+        {
+            "name": "ollama",
+            "description": "本地 Ollama 模型（不需要 API key）",
+            "default_model": "qwen2.5:7b",
+            "env_keys": ["OLLAMA_MODEL", "OLLAMA_BASE_URL"],
+        },
+        {
+            "name": "dummy",
+            "description": "测试用回显适配器（不需要 API key）",
+            "default_model": "dummy",
+            "env_keys": [],
+        },
+    ]
 
-    return OpenAIAdapter(
-        model=cfg["model"],
-        api_key=cfg["api_key"],
-        base_url=cfg.get("base_url"),
-    )
+    # 尝试读取当前默认 provider 的配置
+    default_name = get_default_provider_name()
+    if default_name not in ("ollama", "dummy"):
+        prefix = default_name.upper()
+        model = os.getenv(f"{prefix}_MODEL") or ""
+        has_key = bool(os.getenv(f"{prefix}_API_KEY"))
+        result.append({
+            "name": default_name,
+            "description": f"OpenAI 兼容模型（通过 {prefix}_* 环境变量配置）",
+            "default_model": model,
+            "env_keys": [f"{prefix}_API_KEY", f"{prefix}_MODEL", f"{prefix}_BASE_URL"],
+            "configured": has_key,
+        })
 
-
-def _deepseek_factory(cfg: dict) -> LLMAdapter:
-    from .deepseek_adapter import DeepseekAdapter
-
-    return DeepseekAdapter(
-        model=cfg["model"],
-        api_key=cfg["api_key"],
-        base_url=cfg.get("base_url"),
-    )
-
-
-def _ollama_factory(cfg: dict) -> LLMAdapter:
-    from .ollama_adapter import OllamaAdapter
-
-    return OllamaAdapter(
-        model=cfg["model"],
-        base_url=cfg.get("base_url"),
-    )
-
-
-def _dummy_factory(cfg: dict) -> LLMAdapter:
-    from .dummy_adapter import DummyAdapter
-
-    return DummyAdapter()
-
-
-# ---------------------------------------------------------------------------
-# Register built-in providers
-# ---------------------------------------------------------------------------
-
-register(ProviderSpec(
-    name="openai",
-    factory=_openai_factory,
-    env_prefix="OPENAI_",
-    default_model="gpt-4o-mini",
-    required_env_keys=["API_KEY"],
-    optional_env_keys=["BASE_URL"],
-    description="OpenAI GPT models (default)",
-))
-
-register(ProviderSpec(
-    name="deepseek",
-    factory=_deepseek_factory,
-    env_prefix="DEEPSEEK_",
-    default_model="deepseek-chat",
-    required_env_keys=["API_KEY"],
-    optional_env_keys=["BASE_URL"],
-    description="Deepseek models (OpenAI-compatible)",
-))
-
-register(ProviderSpec(
-    name="ollama",
-    factory=_ollama_factory,
-    env_prefix="OLLAMA_",
-    default_model="qwen2.5:7b",
-    required_env_keys=[],
-    optional_env_keys=["BASE_URL"],
-    description="Local Ollama models",
-))
-
-register(ProviderSpec(
-    name="dummy",
-    factory=_dummy_factory,
-    env_prefix="",
-    default_model="dummy",
-    required_env_keys=[],
-    optional_env_keys=[],
-    description="Dummy adapter for testing (no API key needed)",
-))
+    return result

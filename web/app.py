@@ -71,4 +71,23 @@ app = create_app()
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("web.app:app", host="0.0.0.0", port=8000, reload=True)
+
+    # Exclude workspace and data dirs from reload watcher so that
+    # tool-generated file writes don't restart the dev server.
+    _reload_excludes = [
+        "data/*",
+        "frontend/*",
+        ".venv/*",
+        ".next/*",
+    ]
+    _workspace = os.getenv("WORKSPACE_ROOT")
+    if _workspace:
+        _reload_excludes.append(os.path.join(_workspace, "*"))
+
+    uvicorn.run(
+        "web.app:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        reload_excludes=_reload_excludes,
+    )

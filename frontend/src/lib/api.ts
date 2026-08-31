@@ -92,6 +92,37 @@ export async function syncSessionMessages(
   if (!res.ok) throw new Error(`Failed to sync messages: ${res.status}`);
 }
 
+/** Trigger LLM-based title generation after the first assistant reply. */
+export async function generateSessionTitle(
+  sessionId: string,
+  userMessage: string,
+  assistantMessage: string
+): Promise<{ title: string | null }> {
+  const res = await fetch(`${API_BASE}/session/${sessionId}/generate-title`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      user_message: userMessage,
+      assistant_message: assistantMessage,
+    }),
+  });
+  if (!res.ok) throw new Error(`Failed to generate title: ${res.status}`);
+  return res.json();
+}
+
+/** Manually update a session's title. */
+export async function updateSessionTitle(
+  sessionId: string,
+  title: string
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/session/${sessionId}/title`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  if (!res.ok) throw new Error(`Failed to update title: ${res.status}`);
+}
+
 /** Non-streaming chat request */
 export async function sendMessage(
   message: string,

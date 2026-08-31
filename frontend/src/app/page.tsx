@@ -18,6 +18,8 @@ import {
   listSessions,
   getWorkspace,
   setWorkspace as apiSetWorkspace,
+  generateSessionTitle,
+  updateSessionTitle,
   type AgentStatus,
 } from "@/lib/api";
 
@@ -95,6 +97,7 @@ export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<(() => void) | null>(null);
+  const isNewSessionRef = useRef(false);
 
   // ---- confirmation state ----
   const [confirmation, setConfirmation] = useState<ConfirmationData | null>(null);
@@ -166,23 +169,25 @@ export default function Home() {
     (sid: string, userMsg: string) => {
       setSessions((prev) => {
         const idx = prev.findIndex((s) => s.id === sid);
+        const isNew = idx < 0 || prev[idx].messageCount === 0;
         const meta: SessionMeta =
           idx >= 0
             ? {
                 ...prev[idx],
-                title: prev[idx].messageCount === 0 ? userMsg.slice(0, 30) : prev[idx].title,
+                title: isNew ? userMsg.slice(0, 20) : prev[idx].title,
                 messageCount: prev[idx].messageCount + 2,
                 updatedAt: Date.now(),
               }
             : {
                 id: sid,
-                title: userMsg.slice(0, 30),
+                title: userMsg.slice(0, 20),
                 updatedAt: Date.now(),
                 messageCount: 2,
               };
         const next = [...prev];
         if (idx >= 0) next[idx] = meta;
         else next.unshift(meta);
+        isNewSessionRef.current = isNew;
         return next;
       });
     },
@@ -256,6 +261,16 @@ export default function Home() {
       }
     },
     [sessionId]
+  );
+
+  const handleRenameSession = useCallback(
+    async (sid: string, newTitle: string) => {
+      setSessions((prev) =>
+        prev.map((s) => (s.id === sid ? { ...s, title: newTitle } : s))
+      );
+      updateSessionTitle(sid, newTitle).catch(() => {});
+    },
+    []
   );
 
   // ---- confirmation handlers ----
@@ -487,7 +502,7 @@ export default function Home() {
             )
           );
         },
-        onDone: (fullContent) => {
+        onDone: (fullContent, doneSessionId) => {
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantId ? { ...m, content: fullContent } : m
@@ -495,6 +510,22 @@ export default function Home() {
           );
           setIsStreaming(false);
           setConfirmation(null);
+
+          // Auto-generate title after first reply
+          if (isNewSessionRef.current) {
+            isNewSessionRef.current = false;
+            generateSessionTitle(doneSessionId, editedText, fullContent)
+              .then((res) => {
+                if (res.title) {
+                  setSessions((prev) =>
+                    prev.map((s) =>
+                      s.id === doneSessionId ? { ...s, title: res.title! } : s
+                    )
+                  );
+                }
+              })
+              .catch(() => {});
+          }
         },
         onError: (err) => {
           setMessages((prev) =>
@@ -507,6 +538,7 @@ export default function Home() {
           setIsStreaming(false);
           setAgentStatus(null);
           setConfirmation(null);
+          isNewSessionRef.current = false;
         },
       }, confirmationMode);
 
@@ -572,7 +604,7 @@ export default function Home() {
             )
           );
         },
-        onDone: (fullContent) => {
+        onDone: (fullContent, doneSessionId) => {
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantId ? { ...m, content: fullContent } : m
@@ -580,6 +612,22 @@ export default function Home() {
           );
           setIsStreaming(false);
           setConfirmation(null);
+
+          // Auto-generate title after first reply
+          if (isNewSessionRef.current) {
+            isNewSessionRef.current = false;
+            generateSessionTitle(doneSessionId, text, fullContent)
+              .then((res) => {
+                if (res.title) {
+                  setSessions((prev) =>
+                    prev.map((s) =>
+                      s.id === doneSessionId ? { ...s, title: res.title! } : s
+                    )
+                  );
+                }
+              })
+              .catch(() => {});
+          }
         },
         onError: (err) => {
           setMessages((prev) =>
@@ -592,6 +640,7 @@ export default function Home() {
           setIsStreaming(false);
           setAgentStatus(null);
           setConfirmation(null);
+          isNewSessionRef.current = false;
         },
       }, confirmationMode);
 
@@ -650,6 +699,7 @@ export default function Home() {
           onSelect={handleSelectSession}
           onNew={handleNewSession}
           onDelete={handleDeleteSession}
+          onRename={handleRenameSession}
         />
       )}
 
