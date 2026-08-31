@@ -11,4 +11,5 @@ data/
 frontend/.mimosa/
 frontend/tsconfig.tsbuildinfo
 小助手.md
+flowchart.html
 assistant/prompts/system_prompt.md
