@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useState, useEffect, useRef } from "react";
 import { ShieldAlert, Check, X, Clock } from "lucide-react";
@@ -20,7 +20,15 @@ interface Props {
 
 const TOOL_LABELS: Record<string, string> = {
   file_write: "写入文件",
+  write_file: "写入文件",
   shell_exec: "执行命令行",
+  bash: "执行命令行",
+  edit_file: "编辑文件",
+  read_file: "读取文件",
+  calculate: "计算",
+  get_weather: "查询天气",
+  get_current_time: "获取时间",
+  call_skill: "调用技能",
 };
 
 function formatArgs(args: Record<string, unknown>): string {
@@ -78,11 +86,11 @@ export default function ConfirmationDialog({
   const isExpired = remaining <= 0;
 
   return (
-    <div className="confirmation-overlay">
-      <div className="confirmation-dialog">
+    <div className="confirmation-overlay" onClick={onReject}>
+      <div className="confirmation-dialog" onClick={(e) => e.stopPropagation()}>
         <div className="confirmation-header">
           <ShieldAlert size={20} />
-          <span>Authorization Required</span>
+          <span>需要授权</span>
           <span className="confirmation-timer">
             <Clock size={14} />
             <span>{timerText}</span>
@@ -96,17 +104,17 @@ export default function ConfirmationDialog({
 
         {isExpired ? (
           <div className="confirmation-expired">
-            <span>Authorization timed out. Tool call was rejected automatically.</span>
+            <span>授权超时，工具调用已被自动拒绝。</span>
           </div>
         ) : (
           <div className="confirmation-actions">
             <button className="confirmation-btn reject" onClick={onReject}>
               <X size={14} />
-              <span>Reject</span>
+              <span>拒绝</span>
             </button>
             <button className="confirmation-btn approve" onClick={onApprove}>
               <Check size={14} />
-              <span>Approve</span>
+              <span>允许</span>
             </button>
           </div>
         )}

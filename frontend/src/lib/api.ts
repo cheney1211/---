@@ -40,6 +40,31 @@ export async function checkHealth(): Promise<boolean> {
   }
 }
 
+// ---- Workspace ----
+
+/** Get the current workspace root directory. */
+export async function getWorkspace(): Promise<string> {
+  const res = await fetch(`${API_BASE}/workspace`);
+  if (!res.ok) throw new Error(`Failed to get workspace: ${res.status}`);
+  const data = await res.json();
+  return data.workspace_root;
+}
+
+/** Update the workspace root directory. */
+export async function setWorkspace(path: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/workspace`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(data?.error || `Failed to set workspace: ${res.status}`);
+  }
+  const data = await res.json();
+  return data.workspace_root;
+}
+
 /** Get session conversation history */
 export async function getSessionHistory(sessionId: string): Promise<SessionHistory> {
   const res = await fetch(`${API_BASE}/session/${sessionId}/history`);
@@ -65,6 +90,37 @@ export async function syncSessionMessages(
     body: JSON.stringify({ messages, turns }),
   });
   if (!res.ok) throw new Error(`Failed to sync messages: ${res.status}`);
+}
+
+/** Trigger LLM-based title generation after the first assistant reply. */
+export async function generateSessionTitle(
+  sessionId: string,
+  userMessage: string,
+  assistantMessage: string
+): Promise<{ title: string | null }> {
+  const res = await fetch(`${API_BASE}/session/${sessionId}/generate-title`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      user_message: userMessage,
+      assistant_message: assistantMessage,
+    }),
+  });
+  if (!res.ok) throw new Error(`Failed to generate title: ${res.status}`);
+  return res.json();
+}
+
+/** Manually update a session's title. */
+export async function updateSessionTitle(
+  sessionId: string,
+  title: string
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/session/${sessionId}/title`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  if (!res.ok) throw new Error(`Failed to update title: ${res.status}`);
 }
 
 /** Non-streaming chat request */
@@ -127,7 +183,8 @@ export function sendMessageStream(
     onChunk?: (content: string) => void;
     onDone?: (fullContent: string, sessionId: string) => void;
     onError?: (error: string) => void;
-  }
+  },
+  mode?: string
 ): () => void {
   const controller = new AbortController();
 
@@ -136,7 +193,7 @@ export function sendMessageStream(
       const res = await fetch(`${API_BASE}/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message, session_id: sessionId }),
+        body: JSON.stringify({ message, session_id: sessionId, mode: mode || "confirm" }),
         signal: controller.signal,
       });
 

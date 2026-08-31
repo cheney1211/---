@@ -70,6 +70,13 @@ class SessionRepo:
             if row:
                 row.turns = turns
 
+    @staticmethod
+    async def set_title(session_id: str, title: str) -> None:
+        async with session_scope() as s:
+            row = await s.get(SessionRow, session_id)
+            if row:
+                row.title = title
+
 
 # ---------------------------------------------------------------------------
 # MessageRepo

@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { Send, Square } from "lucide-react";
+import ModeSwitcher, { type ConfirmationMode } from "./ModeSwitcher";
 
 interface Props {
   onSend: (message: string) => void;
@@ -9,9 +10,11 @@ interface Props {
   onStop?: () => void;
   prefillKey?: number;
   prefillText?: string;
+  mode?: ConfirmationMode;
+  onModeChange?: (mode: ConfirmationMode) => void;
 }
 
-export default function ChatInput({ onSend, disabled, onStop, prefillKey, prefillText }: Props) {
+export default function ChatInput({ onSend, disabled, onStop, prefillKey, prefillText, mode, onModeChange }: Props) {
   const [text, setText] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -53,6 +56,9 @@ export default function ChatInput({ onSend, disabled, onStop, prefillKey, prefil
   return (
     <div className="chat-input-bar">
       <div className="chat-input-inner">
+        {mode && onModeChange && (
+          <ModeSwitcher mode={mode} onChange={onModeChange} disabled={disabled} />
+        )}
         <textarea
           ref={textareaRef}
           value={text}

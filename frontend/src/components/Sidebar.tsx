@@ -1,6 +1,7 @@
 "use client";
 
-import { MessageSquarePlus, Trash2, MessageCircle, Wifi, WifiOff } from "lucide-react";
+import { useState, useRef, useEffect } from "react";
+import { MessageSquarePlus, MessageCircle, Wifi, WifiOff, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 
 export interface SessionMeta {
   id: string;
@@ -16,6 +17,7 @@ interface Props {
   onSelect: (id: string) => void;
   onNew: () => void;
   onDelete: (id: string) => void;
+  onRename: (id: string, newTitle: string) => void;
 }
 
 export default function Sidebar({
@@ -25,7 +27,53 @@ export default function Sidebar({
   onSelect,
   onNew,
   onDelete,
+  onRename,
 }: Props) {
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const menuRef = useRef<HTMLDivElement>(null);
+  const renameInputRef = useRef<HTMLInputElement>(null);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    if (!openMenuId) return;
+    const handle = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setOpenMenuId(null);
+      }
+    };
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
+  }, [openMenuId]);
+
+  // Focus rename input when entering rename mode
+  useEffect(() => {
+    if (renamingId) {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    }
+  }, [renamingId]);
+
+  const handleStartRename = (id: string, currentTitle: string) => {
+    setRenamingId(id);
+    setRenameValue(currentTitle);
+    setOpenMenuId(null);
+  };
+
+  const handleConfirmRename = () => {
+    if (renamingId && renameValue.trim()) {
+      onRename(renamingId, renameValue.trim());
+    }
+    setRenamingId(null);
+    setRenameValue("");
+  };
+
+  const handleCancelRename = () => {
+    setRenamingId(null);
+    setRenameValue("");
+  };
+
   return (
     <aside className="sidebar">
       {/* Header */}
@@ -52,19 +100,61 @@ export default function Sidebar({
             >
               <MessageCircle size={14} className="sidebar-session-icon" />
               <div className="sidebar-session-info">
-                <span className="sidebar-session-title">{s.title}</span>
+                {renamingId === s.id ? (
+                  <input
+                    ref={renameInputRef}
+                    className="sidebar-rename-input"
+                    value={renameValue}
+                    onChange={(e) => setRenameValue(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleConfirmRename();
+                      if (e.key === "Escape") handleCancelRename();
+                    }}
+                    onBlur={handleConfirmRename}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                ) : (
+                  <span className="sidebar-session-title">{s.title}</span>
+                )}
                 <span className="sidebar-session-meta">{s.messageCount} 条消息</span>
               </div>
-              <button
-                className="sidebar-session-delete"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDelete(s.id);
-                }}
-                title="删除对话"
-              >
-                <Trash2 size={14} />
-              </button>
+              <div className="sidebar-session-actions" ref={openMenuId === s.id ? menuRef : undefined}>
+                <button
+                  className="sidebar-session-menu-btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setOpenMenuId(openMenuId === s.id ? null : s.id);
+                  }}
+                  title="更多操作"
+                >
+                  <MoreHorizontal size={14} />
+                </button>
+                {openMenuId === s.id && (
+                  <div className="sidebar-dropdown">
+                    <button
+                      className="sidebar-dropdown-item"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleStartRename(s.id, s.title);
+                      }}
+                    >
+                      <Pencil size={14} />
+                      <span>重命名</span>
+                    </button>
+                    <button
+                      className="sidebar-dropdown-item sidebar-dropdown-item-danger"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setOpenMenuId(null);
+                        onDelete(s.id);
+                      }}
+                    >
+                      <Trash2 size={14} />
+                      <span>删除</span>
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           ))
         )}

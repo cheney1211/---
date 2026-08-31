@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from assistant.core import AgentMessage
 from storage.repositories import SessionRepo, MessageRepo
+from web.services.title_service import generate_title
 
 router = APIRouter()
 
@@ -38,6 +39,15 @@ class SessionSummary(BaseModel):
 class SyncMessagesRequest(BaseModel):
     messages: List[MessageOut]
     turns: int
+
+
+class GenerateTitleRequest(BaseModel):
+    user_message: str
+    assistant_message: str
+
+
+class UpdateTitleRequest(BaseModel):
+    title: str
 
 
 # ---------------------------------------------------------------------------
@@ -80,4 +90,23 @@ async def sync_messages(session_id: str, request: SyncMessagesRequest):
         AgentMessage(role=m.role, content=m.content) for m in request.messages
     ]
     await MessageRepo.sync_messages(session_id, agent_msgs, request.turns)
+    return {"ok": True}
+
+
+@router.post("/session/{session_id}/generate-title")
+async def generate_session_title(session_id: str, request: GenerateTitleRequest):
+    """Generate a concise title via LLM based on the first Q&A pair."""
+    title = await generate_title(
+        request.user_message,
+        request.assistant_message,
+    )
+    if title:
+        await SessionRepo.set_title(session_id, title)
+    return {"title": title}
+
+
+@router.patch("/session/{session_id}/title")
+async def update_session_title(session_id: str, request: UpdateTitleRequest):
+    """Manually update a session's title."""
+    await SessionRepo.set_title(session_id, request.title)
     return {"ok": True}
