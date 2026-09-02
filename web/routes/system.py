@@ -37,62 +37,75 @@ class WorkspaceUpdate(BaseModel):
     path: str
 
 
-class WorkspaceResolve(BaseModel):
-    dir_name: str
+def _search_roots() -> list[Path]:
+    """Return common root directories to search for folder names."""
+    roots: list[Path] = [get_workspace_root(), get_workspace_root().parent, Path.home()]
+    if os.name == "nt":
+        for drive in "CDEFG":
+            p = Path(f"{drive}:\\")
+            if p.exists():
+                roots.append(p)
+    else:
+        roots.extend([Path("/"), Path("/home")])
+    return roots
+
+
+def _find_matches(name: str) -> list[str]:
+    """Find all directories matching *name* under common search roots."""
+    seen: set[str] = set()
+    matches: list[str] = []
+    for root in _search_roots():
+        candidate = (root / name).resolve()
+        key = str(candidate).lower() if os.name == "nt" else str(candidate)
+        if candidate.is_dir() and key not in seen:
+            seen.add(key)
+            matches.append(str(candidate))
+    return matches
 
 
 @router.get("/workspace")
 async def get_workspace():
-    """Return the current workspace root directory."""
+    """Return the current workspace folder name."""
     root = get_workspace_root()
-    return {"workspace_root": str(root)}
+    return {"workspace_root": root.name}
+
+
+@router.get("/workspace/search")
+async def search_workspace(name: str):
+    """Search for directories matching *name* across common locations.
+
+    Returns a list of absolute paths. The frontend can use this to let the
+    user pick the correct one when showDirectoryPicker only gives a folder name.
+    """
+    name = name.strip()
+    if not name:
+        return {"matches": []}
+    return {"matches": _find_matches(name)}
 
 
 @router.put("/workspace")
 async def update_workspace(request: WorkspaceUpdate):
-    """Update the workspace root directory."""
-    try:
-        new_root = set_workspace_root(request.path)
-    except ValueError as e:
-        return JSONResponse(status_code=400, content={"error": str(e)})
-    return {"workspace_root": str(new_root)}
+    """Update the workspace root directory.
 
-
-@router.post("/workspace/resolve")
-async def resolve_workspace_dir(request: WorkspaceResolve):
-    """Try to resolve a directory name to a full path.
-
-    Searches common locations to help the browser-based directory picker
-    reconstruct the full absolute path.
+    Accepts either an absolute path or a folder name.
+    If a folder name matches multiple locations, returns them for the user to choose.
     """
-    dir_name = request.dir_name.strip()
-    if not dir_name:
-        return {"matched": False, "path": ""}
+    raw = request.path.strip()
+    if not raw:
+        return JSONResponse(status_code=400, content={"error": "路径不能为空"})
 
-    # If it's already an absolute path that exists, return it directly
-    candidate = Path(dir_name)
+    # Absolute path that exists → use directly
+    candidate = Path(raw)
     if candidate.is_absolute() and candidate.is_dir():
-        return {"matched": True, "path": str(candidate.resolve())}
+        new_root = set_workspace_root(raw)
+        return {"workspace_root": new_root.name}
 
-    # Search locations: current workspace root, its parent, user home, common roots
-    search_roots = set()
-    ws = get_workspace_root()
-    search_roots.add(ws)
-    search_roots.add(ws.parent)
-    search_roots.add(Path.home())
-    if os.name == "nt":
-        # Windows: search drive roots
-        for drive in "CDEFG":
-            p = Path(f"{drive}:\\")
-            if p.exists():
-                search_roots.add(p)
-    else:
-        search_roots.add(Path("/"))
-        search_roots.add(Path("/home"))
+    # Folder name → search for matches
+    matches = _find_matches(raw)
+    if len(matches) == 1:
+        new_root = set_workspace_root(matches[0])
+        return {"workspace_root": new_root.name}
+    if len(matches) > 1:
+        return JSONResponse(status_code=200, content={"workspace_root": "", "matches": matches})
 
-    for root in search_roots:
-        candidate = root / dir_name
-        if candidate.is_dir():
-            return {"matched": True, "path": str(candidate.resolve())}
-
-    return {"matched": False, "path": dir_name}
+    return JSONResponse(status_code=400, content={"error": f"未找到目录: {raw}"})

@@ -23,6 +23,7 @@ router = APIRouter()
 class ChatRequest(BaseModel):
     message: str
     session_id: str | None = None
+    project_id: str | None = None
     provider: str | None = None
     model: str | None = None
     mode: str = "confirm"
@@ -45,10 +46,12 @@ class ConfirmRequest(BaseModel):
 async def chat(request: ChatRequest):
     """Non-streaming REST endpoint."""
     session_id, state = await get_or_create_session(
-        request.session_id, provider=request.provider, model=request.model,
+        request.session_id, project_id=request.project_id,
+        provider=request.provider, model=request.model,
     )
     reply = await process_message(
         session_id, state, request.message,
+        project_id=request.project_id,
         provider=request.provider, model=request.model, mode=request.mode,
     )
     return ChatResponse(reply=reply, session_id=session_id)
@@ -58,12 +61,14 @@ async def chat(request: ChatRequest):
 async def chat_stream(request: ChatRequest):
     """SSE streaming endpoint."""
     session_id, state = await get_or_create_session(
-        request.session_id, provider=request.provider, model=request.model,
+        request.session_id, project_id=request.project_id,
+        provider=request.provider, model=request.model,
     )
 
     async def event_generator():
         async for event in process_message_stream(
             session_id, state, request.message,
+            project_id=request.project_id,
             provider=request.provider, model=request.model, mode=request.mode,
         ):
             yield {

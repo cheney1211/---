@@ -11,8 +11,12 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+import uuid
+
 from .routes import router as chat_router
 from storage import init_db, recover_pending_tool_calls, get_engine
+from storage.repositories import ProjectRepo
+from assistant.tools.workspace import ensure_project_dir
 
 # Load .env from project root
 _ROOT = Path(__file__).resolve().parent.parent
@@ -36,6 +40,17 @@ async def lifespan(app: FastAPI):
             "Recovered %d pending tool call(s) -> marked as error (manual retry needed)",
             len(recovered),
         )
+
+    # Ensure workSpace root directory exists
+    (_ROOT / "workSpace").mkdir(exist_ok=True)
+
+    # Create default project if none exists
+    if await ProjectRepo.is_empty():
+        default_id = str(uuid.uuid4())
+        await ProjectRepo.create(default_id, "默认项目")
+        ensure_project_dir(default_id)
+        logger.info("Created default project: %s", default_id)
+
     logger.info("Database ready")
     yield
     # ---- shutdown ----
@@ -76,13 +91,11 @@ if __name__ == "__main__":
     # tool-generated file writes don't restart the dev server.
     _reload_excludes = [
         "data/*",
+        "workSpace/*",
         "frontend/*",
         ".venv/*",
         ".next/*",
     ]
-    _workspace = os.getenv("WORKSPACE_ROOT")
-    if _workspace:
-        _reload_excludes.append(os.path.join(_workspace, "*"))
 
     uvicorn.run(
         "web.app:app",

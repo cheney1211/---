@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { MessageSquarePlus, MessageCircle, Wifi, WifiOff, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
+import { MessageSquarePlus, MessageCircle, Wifi, WifiOff, MoreHorizontal, Pencil, Trash2, FolderOpen, Plus, ChevronDown } from "lucide-react";
 
 export interface SessionMeta {
   id: string;
@@ -10,10 +10,21 @@ export interface SessionMeta {
   messageCount: number;
 }
 
+export interface ProjectMeta {
+  id: string;
+  name: string;
+}
+
 interface Props {
+  projects: ProjectMeta[];
+  activeProjectId: string | undefined;
   sessions: SessionMeta[];
   activeSessionId: string | undefined;
   isConnected: boolean;
+  onSelectProject: (id: string) => void;
+  onNewProject: () => void;
+  onRenameProject: (id: string, name: string) => void;
+  onDeleteProject: (id: string) => void;
   onSelect: (id: string) => void;
   onNew: () => void;
   onDelete: (id: string) => void;
@@ -21,9 +32,15 @@ interface Props {
 }
 
 export default function Sidebar({
+  projects,
+  activeProjectId,
   sessions,
   activeSessionId,
   isConnected,
+  onSelectProject,
+  onNewProject,
+  onRenameProject,
+  onDeleteProject,
   onSelect,
   onNew,
   onDelete,
@@ -32,8 +49,13 @@ export default function Sidebar({
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null);
+  const [projectRenameValue, setProjectRenameValue] = useState("");
   const menuRef = useRef<HTMLDivElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
+  const projectMenuRef = useRef<HTMLDivElement>(null);
+  const projectRenameRef = useRef<HTMLInputElement>(null);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -46,6 +68,26 @@ export default function Sidebar({
     document.addEventListener("mousedown", handle);
     return () => document.removeEventListener("mousedown", handle);
   }, [openMenuId]);
+
+  // Close project menu on outside click
+  useEffect(() => {
+    if (!projectMenuOpen) return;
+    const handle = (e: MouseEvent) => {
+      if (projectMenuRef.current && !projectMenuRef.current.contains(e.target as Node)) {
+        setProjectMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
+  }, [projectMenuOpen]);
+
+  // Focus project rename input
+  useEffect(() => {
+    if (renamingProjectId) {
+      projectRenameRef.current?.focus();
+      projectRenameRef.current?.select();
+    }
+  }, [renamingProjectId]);
 
   // Focus rename input when entering rename mode
   useEffect(() => {
@@ -74,6 +116,17 @@ export default function Sidebar({
     setRenameValue("");
   };
 
+  const activeProject = projects.find((p) => p.id === activeProjectId);
+
+  const handleProjectRenameConfirm = () => {
+    if (renamingProjectId && projectRenameValue.trim()) {
+      onRenameProject(renamingProjectId, projectRenameValue.trim());
+    }
+    setRenamingProjectId(null);
+    setProjectRenameValue("");
+    setProjectMenuOpen(false);
+  };
+
   return (
     <aside className="sidebar">
       {/* Header */}
@@ -85,6 +138,85 @@ export default function Sidebar({
         <button onClick={onNew} className="sidebar-new-btn" title="新建对话">
           <MessageSquarePlus size={18} />
         </button>
+      </div>
+
+      {/* Project selector */}
+      <div className="sidebar-project" ref={projectMenuOpen ? projectMenuRef : undefined}>
+        <button
+          className="sidebar-project-btn"
+          onClick={() => setProjectMenuOpen(!projectMenuOpen)}
+        >
+          <FolderOpen size={14} className="sidebar-project-icon" />
+          {renamingProjectId === activeProjectId ? (
+            <input
+              ref={projectRenameRef}
+              className="sidebar-project-rename-input"
+              value={projectRenameValue}
+              onChange={(e) => setProjectRenameValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleProjectRenameConfirm();
+                if (e.key === "Escape") { setRenamingProjectId(null); setProjectMenuOpen(false); }
+              }}
+              onBlur={handleProjectRenameConfirm}
+              onClick={(e) => e.stopPropagation()}
+            />
+          ) : (
+            <span className="sidebar-project-name">{activeProject?.name || "未选择项目"}</span>
+          )}
+          <ChevronDown size={14} className={`sidebar-project-chevron ${projectMenuOpen ? "open" : ""}`} />
+        </button>
+        {projectMenuOpen && !renamingProjectId && (
+          <div className="sidebar-project-dropdown">
+            {projects.map((p) => (
+              <div
+                key={p.id}
+                className={`sidebar-project-item ${p.id === activeProjectId ? "active" : ""}`}
+                role="button"
+                tabIndex={0}
+                onClick={() => { onSelectProject(p.id); setProjectMenuOpen(false); }}
+              >
+                <span className="sidebar-project-item-name">{p.name}</span>
+                {p.id === activeProjectId && (
+                  <div className="sidebar-project-item-actions">
+                    <button
+                      className="sidebar-project-action"
+                      title="重命名"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setRenamingProjectId(p.id);
+                        setProjectRenameValue(p.name);
+                      }}
+                    >
+                      <Pencil size={12} />
+                    </button>
+                    {projects.length > 1 && (
+                      <button
+                        className="sidebar-project-action danger"
+                        title="删除项目"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDeleteProject(p.id);
+                          setProjectMenuOpen(false);
+                        }}
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+            <div
+              className="sidebar-project-item new"
+              role="button"
+              tabIndex={0}
+              onClick={() => { onNewProject(); setProjectMenuOpen(false); }}
+            >
+              <Plus size={14} />
+              <span>新建项目</span>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Session list */}

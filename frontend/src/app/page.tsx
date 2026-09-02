@@ -1,12 +1,12 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { PanelLeftClose, PanelLeft, X, Trash2, Check, FolderOpen, FolderInput, Check as CheckIcon, X as XIcon } from "lucide-react";
+import { PanelLeftClose, PanelLeft, X, Trash2, Check } from "lucide-react";
 import ChatMessage from "@/components/ChatMessage";
 import ChatInput from "@/components/ChatInput";
 import type { ConfirmationMode } from "@/components/ModeSwitcher";
 import ConfirmationDialog from "@/components/ConfirmationDialog";
-import Sidebar, { type SessionMeta } from "@/components/Sidebar";
+import Sidebar, { type SessionMeta, type ProjectMeta } from "@/components/Sidebar";
 import SuggestedPrompts from "@/components/SuggestedPrompts";
 import {
   sendMessageStream,
@@ -16,8 +16,10 @@ import {
   syncSessionMessages,
   resolveConfirmation,
   listSessions,
-  getWorkspace,
-  setWorkspace as apiSetWorkspace,
+  listProjects,
+  createProject as apiCreateProject,
+  renameProject as apiRenameProject,
+  deleteProject as apiDeleteProject,
   generateSessionTitle,
   updateSessionTitle,
   type AgentStatus,
@@ -112,41 +114,24 @@ export default function Home() {
   // ---- confirmation mode ----
   const [confirmationMode, setConfirmationMode] = useState<ConfirmationMode>("confirm");
 
-  // ---- workspace ----
-  const [workspaceRoot, setWorkspaceRoot] = useState("");
-  const [workspaceEditing, setWorkspaceEditing] = useState(false);
-  const [workspaceInput, setWorkspaceInput] = useState("");
-  const [workspaceError, setWorkspaceError] = useState("");
+  // ---- project ----
+  const [projects, setProjects] = useState<ProjectMeta[]>([]);
+  const [activeProjectId, setActiveProjectId] = useState<string | undefined>();
 
   // ---- init ----
   useEffect(() => {
-    const localSessions = loadSessions();
-    setSessions(localSessions);
     checkHealth().then(setIsConnected);
     const timer = setInterval(() => checkHealth().then(setIsConnected), 30000);
 
-    // Fetch workspace root
-    getWorkspace().then(setWorkspaceRoot).catch(() => {});
-
-    // Sync with backend DB: recover sessions missing from localStorage
-    listSessions()
-      .then((remote) => {
-        if (remote.length === 0) return;
-        setSessions((prev) => {
-          const known = new Set(prev.map((s) => s.id));
-          const merged = [...prev];
-          for (const r of remote) {
-            if (!known.has(r.id)) {
-              merged.push({
-                id: r.id,
-                title: r.title ?? "Untitled",
-                updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : Date.now(),
-                messageCount: r.turns * 2,
-              });
-            }
-          }
-          return merged;
-        });
+    // Load projects, then select the first one and load its sessions
+    listProjects()
+      .then((projs) => {
+        setProjects(projs.map((p) => ({ id: p.id, name: p.name })));
+        if (projs.length > 0) {
+          const firstId = projs[0].id;
+          setActiveProjectId(firstId);
+          loadSessionsForProject(firstId);
+        }
       })
       .catch(() => {});
 
@@ -163,6 +148,66 @@ export default function Home() {
       behavior: "smooth",
     });
   }, [messages, agentStatus, confirmation]);
+
+  // ---- project helpers ----
+  const loadSessionsForProject = useCallback((projectId: string) => {
+    listSessions(projectId)
+      .then((remote) => {
+        setSessions(
+          remote.map((r) => ({
+            id: r.id,
+            title: r.title ?? "Untitled",
+            updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : Date.now(),
+            messageCount: r.turns * 2,
+          }))
+        );
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleSelectProject = useCallback((projectId: string) => {
+    setActiveProjectId(projectId);
+    setMessages([]);
+    setSessionId(undefined);
+    loadSessionsForProject(projectId);
+  }, [loadSessionsForProject]);
+
+  const handleNewProject = useCallback(async () => {
+    try {
+      const proj = await apiCreateProject();
+      setProjects((prev) => [...prev, { id: proj.id, name: proj.name }]);
+      setActiveProjectId(proj.id);
+      setMessages([]);
+      setSessionId(undefined);
+      setSessions([]);
+    } catch { /* ignore */ }
+  }, []);
+
+  const handleRenameProject = useCallback(async (projectId: string, name: string) => {
+    try {
+      await apiRenameProject(projectId, name);
+      setProjects((prev) => prev.map((p) => p.id === projectId ? { ...p, name } : p));
+    } catch { /* ignore */ }
+  }, []);
+
+  const handleDeleteProject = useCallback(async (projectId: string) => {
+    try {
+      await apiDeleteProject(projectId);
+      setProjects((prev) => {
+        const next = prev.filter((p) => p.id !== projectId);
+        // If deleted project was active, switch to first remaining
+        if (activeProjectId === projectId && next.length > 0) {
+          setActiveProjectId(next[0].id);
+          loadSessionsForProject(next[0].id);
+        }
+        return next;
+      });
+      if (activeProjectId === projectId) {
+        setMessages([]);
+        setSessionId(undefined);
+      }
+    } catch { /* ignore */ }
+  }, [activeProjectId, loadSessionsForProject]);
 
   // ---- session helpers ----
   const updateSessionMeta = useCallback(
@@ -300,79 +345,7 @@ export default function Home() {
     setConfirmation(null);
   }, []);
 
-  // ---- workspace editing ----
-  const [canBrowse, setCanBrowse] = useState(false);
-  useEffect(() => {
-    setCanBrowse("showDirectoryPicker" in window && window.isSecureContext);
-  }, []);
 
-  const handleWorkspaceStartEdit = useCallback(() => {
-    setWorkspaceInput(workspaceRoot);
-    setWorkspaceEditing(true);
-    setWorkspaceError("");
-  }, [workspaceRoot]);
-
-  const handleWorkspaceCancel = useCallback(() => {
-    setWorkspaceEditing(false);
-    setWorkspaceInput("");
-    setWorkspaceError("");
-  }, []);
-
-  const handleWorkspaceSave = useCallback(async () => {
-    const trimmed = workspaceInput.trim();
-    if (!trimmed) return;
-    try {
-      const newRoot = await apiSetWorkspace(trimmed);
-      setWorkspaceRoot(newRoot);
-      setWorkspaceEditing(false);
-      setWorkspaceError("");
-    } catch (err: unknown) {
-      setWorkspaceError(err instanceof Error ? err.message : "保存失败");
-    }
-  }, [workspaceInput]);
-
-  const handleWorkspaceKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        handleWorkspaceSave();
-      } else if (e.key === "Escape") {
-        handleWorkspaceCancel();
-      }
-    },
-    [handleWorkspaceSave, handleWorkspaceCancel]
-  );
-
-  const handleWorkspaceBrowse = useCallback(async () => {
-    try {
-      const handle = await (window as unknown as { showDirectoryPicker: () => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker();
-      const dirName = handle.name;
-      // Try to resolve full path via backend
-      try {
-        const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000/api"}/workspace/resolve`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ dir_name: dirName }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.matched) {
-            setWorkspaceInput(data.path);
-            setWorkspaceEditing(true);
-            setWorkspaceError("");
-            return;
-          }
-        }
-      } catch { /* ignore */ }
-      // Fallback: fill in dir name, user completes the path
-      setWorkspaceInput(dirName);
-      setWorkspaceEditing(true);
-      setWorkspaceError("请补全为完整绝对路径后保存");
-    } catch (err: unknown) {
-      if (err instanceof DOMException && err.name === "AbortError") return;
-      setWorkspaceError(err instanceof Error ? err.message : "选择目录失败");
-    }
-  }, [workspaceRoot]);
 
   // ---- select mode ----
   const handleEnterSelectMode = useCallback(() => {
@@ -540,11 +513,11 @@ export default function Home() {
           setConfirmation(null);
           isNewSessionRef.current = false;
         },
-      }, confirmationMode);
+      }, confirmationMode, activeProjectId);
 
       abortRef.current = abort;
     },
-    [isStreaming, sessionId, messages, updateSessionMeta, adjustSessionMessageCount, setConfirmation, confirmationMode]
+    [isStreaming, sessionId, messages, updateSessionMeta, adjustSessionMessageCount, setConfirmation, confirmationMode, activeProjectId]
   );
 
   // ---- latest user msg ----
@@ -642,11 +615,11 @@ export default function Home() {
           setConfirmation(null);
           isNewSessionRef.current = false;
         },
-      }, confirmationMode);
+      }, confirmationMode, activeProjectId);
 
       abortRef.current = abort;
     },
-    [isStreaming, sessionId, updateSessionMeta, selectMode, confirmationMode]
+    [isStreaming, sessionId, updateSessionMeta, selectMode, confirmationMode, activeProjectId]
   );
 
   const handleStop = () => {
@@ -693,9 +666,15 @@ export default function Home() {
     <div className="app-layout">
       {sidebarOpen && (
         <Sidebar
+          projects={projects}
+          activeProjectId={activeProjectId}
           sessions={sessions}
           activeSessionId={sessionId}
           isConnected={isConnected}
+          onSelectProject={handleSelectProject}
+          onNewProject={handleNewProject}
+          onRenameProject={handleRenameProject}
+          onDeleteProject={handleDeleteProject}
           onSelect={handleSelectSession}
           onNew={handleNewSession}
           onDelete={handleDeleteSession}
@@ -713,43 +692,6 @@ export default function Home() {
             {sidebarOpen ? <PanelLeftClose size={18} /> : <PanelLeft size={18} />}
           </button>
           <h1 className="main-header-title">Coco</h1>
-
-          {/* Workspace selector */}
-          <div className="workspace-selector">
-            <FolderOpen size={14} className="workspace-icon" />
-            {workspaceEditing ? (
-              <div className="workspace-edit-row">
-                <input
-                  className="workspace-input"
-                  value={workspaceInput}
-                  onChange={(e) => setWorkspaceInput(e.target.value)}
-                  onKeyDown={handleWorkspaceKeyDown}
-                  placeholder={canBrowse ? "输入或浏览选择工作区路径..." : "输入工作区绝对路径..."}
-                  autoFocus
-                />
-                <button className="workspace-btn save" onClick={handleWorkspaceSave} title="保存">
-                  <CheckIcon size={14} />
-                </button>
-                <button className="workspace-btn cancel" onClick={handleWorkspaceCancel} title="取消">
-                  <XIcon size={14} />
-                </button>
-                {workspaceError && <span className="workspace-error">{workspaceError}</span>}
-              </div>
-            ) : (
-              <button className="workspace-path-btn" onClick={handleWorkspaceStartEdit} title="点击编辑路径">
-                {workspaceRoot || "未设置"}
-              </button>
-            )}
-            {canBrowse && (
-              <button
-                className="workspace-btn browse"
-                onClick={handleWorkspaceBrowse}
-                title="浏览选择目录"
-              >
-                <FolderInput size={14} />
-              </button>
-            )}
-          </div>
 
           <div className={`header-status-dot ${isConnected ? "connected" : ""}`} />
         </header>

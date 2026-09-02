@@ -6,13 +6,14 @@ Usage:
 """
 
 from .database import init_db, get_engine, session_scope
-from .repositories import SessionRepo, MessageRepo, PendingToolRepo
+from .repositories import ProjectRepo, SessionRepo, MessageRepo, PendingToolRepo
 from .recovery import recover_pending_tool_calls
 
 __all__ = [
     "init_db",
     "get_engine",
     "session_scope",
+    "ProjectRepo",
     "SessionRepo",
     "MessageRepo",
     "PendingToolRepo",

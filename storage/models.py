@@ -30,6 +30,28 @@ def _utcnow() -> _dt.datetime:
 
 
 # ---------------------------------------------------------------------------
+# Project
+# ---------------------------------------------------------------------------
+
+
+class ProjectRow(Base):
+    __tablename__ = "projects"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(256))
+    created_at: Mapped[_dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[_dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    sessions: Mapped[List["SessionRow"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Session
 # ---------------------------------------------------------------------------
 
@@ -38,6 +60,9 @@ class SessionRow(Base):
     __tablename__ = "sessions"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[Optional[str]] = mapped_column(
+        String(64), ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     title: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
     provider: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
@@ -49,6 +74,7 @@ class SessionRow(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
+    project: Mapped[Optional["ProjectRow"]] = relationship(back_populates="sessions")
     messages: Mapped[List["MessageRow"]] = relationship(
         back_populates="session", cascade="all, delete-orphan", lazy="selectin"
     )

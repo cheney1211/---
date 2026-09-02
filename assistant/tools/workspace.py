@@ -12,25 +12,60 @@ Resolution order for workspace root:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import platform
 from pathlib import Path
+from typing import Optional
 
 # Project root: two levels up from this file (assistant/tools/workspace.py -> project root)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _CONFIG_FILE = _PROJECT_ROOT / "data" / "workspace.json"
+_WORKSPACE_ROOT = _PROJECT_ROOT / "workSpace"
+
+# Per-request project context: set by chat_service before tool execution
+_current_project_workspace: Optional[Path] = None
+
+
+def get_project_workspace(project_id: str) -> Path:
+    """Return the workspace directory for a specific project.
+
+    Path rule: <project_root>/workSpace/<project_id>/
+    """
+    return (_WORKSPACE_ROOT / project_id).resolve()
+
+
+def ensure_project_dir(project_id: str) -> Path:
+    """Ensure the project workspace directory exists and return it."""
+    p = get_project_workspace(project_id)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+@contextlib.contextmanager
+def project_context(project_id: str | None):
+    """Context manager that sets the active project workspace for tool execution."""
+    global _current_project_workspace
+    old = _current_project_workspace
+    try:
+        _current_project_workspace = get_project_workspace(project_id) if project_id else None
+        yield
+    finally:
+        _current_project_workspace = old
 
 
 def get_workspace_root() -> Path:
     """Return the workspace root directory.
 
-    Resolution order:
-    1. data/workspace.json {"workspace_root": "..."}
-    2. WORKSPACE_ROOT environment variable
-    3. Project root directory
+    If a project context is active, returns the project workspace.
+    Otherwise falls back to legacy resolution order.
     """
-    # 1. Check persisted config file
+    # 1. Active project context (set by chat_service per request)
+    if _current_project_workspace is not None:
+        return _current_project_workspace
+
+    # 2. Legacy: persisted config file
     if _CONFIG_FILE.exists():
         try:
             data = json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
@@ -40,12 +75,12 @@ def get_workspace_root() -> Path:
         except (json.JSONDecodeError, OSError):
             pass
 
-    # 2. Check environment variable
+    # 3. Legacy: environment variable
     env = os.getenv("WORKSPACE_ROOT")
     if env:
         return Path(env).resolve()
 
-    # 3. Fallback to project root
+    # 4. Fallback to project root
     return _PROJECT_ROOT
 
 

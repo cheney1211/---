@@ -10,7 +10,7 @@ from assistant.tools import get_tools, register as register_tool
 from assistant.tools.builtin.call_skill import CallSkillTool, configure as configure_call_skill
 from assistant.skills import build_skills_system_prompt
 from storage.repositories import SessionRepo, MessageRepo, PendingToolRepo
-from assistant.tools.workspace import get_workspace_root, get_platform_hint
+from assistant.tools.workspace import get_workspace_root, get_platform_hint, project_context
 from web.llm import get_adapter, get_provider, get_default_provider_name, get_default_system_message
 from web.utils.message_utils import classify_and_extract
 
@@ -18,19 +18,26 @@ from web.utils.message_utils import classify_and_extract
 async def get_or_create_session(
     session_id: str | None = None,
     *,
+    project_id: str | None = None,
     provider: str | None = None,
     model: str | None = None,
 ) -> tuple[str, AgentState]:
     """Return (session_id, AgentState) backed by DB."""
     sid = session_id or str(uuid.uuid4())
-    await SessionRepo.get_or_create(sid, provider=provider, model=model)
+    await SessionRepo.get_or_create(sid, project_id=project_id, provider=provider, model=model)
     messages = await MessageRepo.list_recent(sid)
     turns = await MessageRepo.get_turns(sid)
     state = AgentState(messages=messages, turns=turns)
     return sid, state
 
 
-def resolve_provider(*, provider: str | None = None, model: str | None = None, mode: str = "confirm"):
+def resolve_provider(
+    *,
+    project_id: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    mode: str = "confirm",
+):
     """Build provider with tools (including call_skill) and skill index."""
     provider_name = provider or get_default_provider_name()
     base_system = get_default_system_message()
@@ -83,6 +90,7 @@ async def process_message(
     state: AgentState,
     user_text: str,
     *,
+    project_id: str | None = None,
     provider: str | None = None,
     model: str | None = None,
     mode: str = "confirm",
@@ -92,17 +100,18 @@ async def process_message(
     await persist_message(session_id, user_msg, kind="user")
     state.append(user_msg)
 
-    llm_provider = resolve_provider(provider=provider, model=model, mode=mode)
+    with project_context(project_id):
+        llm_provider = resolve_provider(provider=provider, model=model, mode=mode)
 
-    full_text = ""
-    async for msg in llm_provider(state, session_id=session_id):
-        if msg.metadata.get("chunk"):
-            continue
-        kind, is_chunk = classify_and_extract(msg)
-        await persist_message(session_id, msg, kind=kind)
-        state.append(msg)
-        if msg.role == "assistant":
-            full_text = msg.content
+        full_text = ""
+        async for msg in llm_provider(state, session_id=session_id):
+            if msg.metadata.get("chunk"):
+                continue
+            kind, is_chunk = classify_and_extract(msg)
+            await persist_message(session_id, msg, kind=kind)
+            state.append(msg)
+            if msg.role == "assistant":
+                full_text = msg.content
 
     state.turns += 1
     await SessionRepo.set_turns(session_id, state.turns)
@@ -114,6 +123,7 @@ async def process_message_stream(
     state: AgentState,
     user_text: str,
     *,
+    project_id: str | None = None,
     provider: str | None = None,
     model: str | None = None,
     mode: str = "confirm",
@@ -123,27 +133,28 @@ async def process_message_stream(
     await persist_message(session_id, user_msg, kind="user")
     state.append(user_msg)
 
-    llm_provider = resolve_provider(provider=provider, model=model, mode=mode)
+    with project_context(project_id):
+        llm_provider = resolve_provider(provider=provider, model=model, mode=mode)
 
-    yield {"event": "session", "data": {"session_id": session_id}}
+        yield {"event": "session", "data": {"session_id": session_id}}
 
-    full_text = ""
-    async for msg in llm_provider(state, session_id=session_id):
-        status_data = msg.metadata.get("status")
-        if status_data:
-            yield {"event": "status", "data": status_data}
-            continue
+        full_text = ""
+        async for msg in llm_provider(state, session_id=session_id):
+            status_data = msg.metadata.get("status")
+            if status_data:
+                yield {"event": "status", "data": status_data}
+                continue
 
-        if msg.metadata.get("chunk"):
-            full_text += msg.content
-            yield {"event": "chunk", "data": {"content": msg.content}}
-            continue
+            if msg.metadata.get("chunk"):
+                full_text += msg.content
+                yield {"event": "chunk", "data": {"content": msg.content}}
+                continue
 
-        kind, is_chunk = classify_and_extract(msg)
-        await persist_message(session_id, msg, kind=kind)
-        state.append(msg)
-        if msg.role == "assistant":
-            full_text = msg.content
+            kind, is_chunk = classify_and_extract(msg)
+            await persist_message(session_id, msg, kind=kind)
+            state.append(msg)
+            if msg.role == "assistant":
+                full_text = msg.content
 
     state.turns += 1
     await SessionRepo.set_turns(session_id, state.turns)

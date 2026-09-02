@@ -60,6 +60,14 @@ async def init_db() -> None:
         await conn.exec_driver_sql("PRAGMA foreign_keys=ON")
         await conn.run_sync(Base.metadata.create_all)
 
+        # Lightweight migration: add project_id column to sessions if missing
+        result = await conn.exec_driver_sql("PRAGMA table_info(sessions)")
+        columns = {row[1] for row in result}
+        if "project_id" not in columns:
+            await conn.exec_driver_sql(
+                "ALTER TABLE sessions ADD COLUMN project_id TEXT"
+            )
+
 
 @asynccontextmanager
 async def session_scope() -> AsyncGenerator[AsyncSession, None]:
