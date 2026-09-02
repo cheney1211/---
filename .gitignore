@@ -5,6 +5,7 @@ __pycache__/
 *.pyo
 tmp_*.py
 data/
+workSpace/
 .zcode/
 .vscode/
 .mimosa/

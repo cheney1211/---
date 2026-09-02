@@ -1,5 +1,51 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000/api";
 
+// ---- Projects ----
+
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/** List all projects. */
+export async function listProjects(): Promise<ProjectSummary[]> {
+  const res = await fetch(`${API_BASE}/projects`);
+  if (!res.ok) throw new Error(`Failed to list projects: ${res.status}`);
+  return res.json();
+}
+
+/** Create a new project. name is optional (auto-generated if omitted). */
+export async function createProject(name?: string): Promise<ProjectSummary> {
+  const res = await fetch(`${API_BASE}/projects`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: name || undefined }),
+  });
+  if (!res.ok) throw new Error(`Failed to create project: ${res.status}`);
+  return res.json();
+}
+
+/** Rename a project (display name only). */
+export async function renameProject(projectId: string, name: string): Promise<ProjectSummary> {
+  const res = await fetch(`${API_BASE}/projects/${projectId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) throw new Error(`Failed to rename project: ${res.status}`);
+  return res.json();
+}
+
+/** Delete a project and all its sessions. */
+export async function deleteProject(projectId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/projects/${projectId}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Failed to delete project: ${res.status}`);
+}
+
+// ---- Sessions ----
+
 export interface SessionSummary {
   id: string;
   title: string | null;
@@ -7,9 +53,12 @@ export interface SessionSummary {
   updated_at: string | null;
 }
 
-/** List all sessions from the backend database */
-export async function listSessions(): Promise<SessionSummary[]> {
-  const res = await fetch(`${API_BASE}/sessions`);
+/** List sessions, optionally filtered by project_id. */
+export async function listSessions(projectId?: string): Promise<SessionSummary[]> {
+  const url = projectId
+    ? `${API_BASE}/sessions?project_id=${encodeURIComponent(projectId)}`
+    : `${API_BASE}/sessions`;
+  const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to list sessions: ${res.status}`);
   return res.json();
 }
@@ -50,19 +99,24 @@ export async function getWorkspace(): Promise<string> {
   return data.workspace_root;
 }
 
+/** Search for directories matching a folder name. */
+export async function searchWorkspace(name: string): Promise<string[]> {
+  const res = await fetch(`${API_BASE}/workspace/search?name=${encodeURIComponent(name)}`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.matches ?? [];
+}
+
 /** Update the workspace root directory. */
-export async function setWorkspace(path: string): Promise<string> {
+export async function setWorkspace(path: string): Promise<{ name: string; matches?: string[] }> {
   const res = await fetch(`${API_BASE}/workspace`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path }),
   });
-  if (!res.ok) {
-    const data = await res.json().catch(() => null);
-    throw new Error(data?.error || `Failed to set workspace: ${res.status}`);
-  }
-  const data = await res.json();
-  return data.workspace_root;
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error || `Failed to set workspace: ${res.status}`);
+  return { name: data.workspace_root, matches: data.matches };
 }
 
 /** Get session conversation history */
@@ -126,12 +180,13 @@ export async function updateSessionTitle(
 /** Non-streaming chat request */
 export async function sendMessage(
   message: string,
-  sessionId?: string
+  sessionId?: string,
+  projectId?: string
 ): Promise<ChatResponse> {
   const res = await fetch(`${API_BASE}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, session_id: sessionId }),
+    body: JSON.stringify({ message, session_id: sessionId, project_id: projectId }),
   });
   if (!res.ok) throw new Error(`Chat request failed: ${res.status}`);
   return res.json();
@@ -184,7 +239,8 @@ export function sendMessageStream(
     onDone?: (fullContent: string, sessionId: string) => void;
     onError?: (error: string) => void;
   },
-  mode?: string
+  mode?: string,
+  projectId?: string
 ): () => void {
   const controller = new AbortController();
 
@@ -193,7 +249,7 @@ export function sendMessageStream(
       const res = await fetch(`${API_BASE}/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message, session_id: sessionId, mode: mode || "confirm" }),
+        body: JSON.stringify({ message, session_id: sessionId, project_id: projectId, mode: mode || "confirm" }),
         signal: controller.signal,
       });
 

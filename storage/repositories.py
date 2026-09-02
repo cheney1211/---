@@ -11,7 +11,60 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.core import AgentMessage
 from .database import session_scope
-from .models import MessageRow, PendingToolCallRow, SessionRow
+from .models import MessageRow, PendingToolCallRow, ProjectRow, SessionRow
+
+
+# ---------------------------------------------------------------------------
+# ProjectRepo
+# ---------------------------------------------------------------------------
+
+
+class ProjectRepo:
+    """CRUD for projects."""
+
+    @staticmethod
+    async def create(project_id: str, name: str) -> ProjectRow:
+        async with session_scope() as s:
+            row = ProjectRow(id=project_id, name=name)
+            s.add(row)
+            await s.flush()
+            return row
+
+    @staticmethod
+    async def get(project_id: str) -> ProjectRow | None:
+        async with session_scope() as s:
+            return await s.get(ProjectRow, project_id)
+
+    @staticmethod
+    async def list_all() -> list[ProjectRow]:
+        async with session_scope() as s:
+            stmt = select(ProjectRow).order_by(ProjectRow.created_at.asc())
+            result = await s.execute(stmt)
+            return list(result.scalars().all())
+
+    @staticmethod
+    async def rename(project_id: str, name: str) -> bool:
+        async with session_scope() as s:
+            row = await s.get(ProjectRow, project_id)
+            if row is None:
+                return False
+            row.name = name
+            return True
+
+    @staticmethod
+    async def delete(project_id: str) -> bool:
+        async with session_scope() as s:
+            row = await s.get(ProjectRow, project_id)
+            if row is None:
+                return False
+            await s.delete(row)
+            return True
+
+    @staticmethod
+    async def is_empty() -> bool:
+        async with session_scope() as s:
+            result = await s.execute(select(ProjectRow).limit(1))
+            return result.scalar() is None
 
 
 # ---------------------------------------------------------------------------
@@ -26,13 +79,17 @@ class SessionRepo:
     async def get_or_create(
         session_id: str,
         *,
+        project_id: str | None = None,
         provider: str | None = None,
         model: str | None = None,
     ) -> SessionRow:
         async with session_scope() as s:
             row = await s.get(SessionRow, session_id)
             if row is None:
-                row = SessionRow(id=session_id, provider=provider, model=model)
+                row = SessionRow(
+                    id=session_id, project_id=project_id,
+                    provider=provider, model=model,
+                )
                 s.add(row)
                 await s.flush()
             return row
@@ -56,10 +113,12 @@ class SessionRepo:
             return True
 
     @staticmethod
-    async def list_all() -> List[SessionRow]:
-        """Return every session ordered by most recently updated."""
+    async def list_all(project_id: str | None = None) -> List[SessionRow]:
+        """Return sessions ordered by most recently updated, optionally filtered by project."""
         async with session_scope() as s:
             stmt = select(SessionRow).order_by(SessionRow.updated_at.desc())
+            if project_id is not None:
+                stmt = stmt.where(SessionRow.project_id == project_id)
             result = await s.execute(stmt)
             return list(result.scalars().all())
 

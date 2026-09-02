@@ -55,9 +55,9 @@ class UpdateTitleRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.get("/sessions", response_model=List[SessionSummary])
-async def list_sessions():
-    """Return all sessions stored in the database."""
-    rows = await SessionRepo.list_all()
+async def list_sessions(project_id: str | None = None):
+    """Return sessions, optionally filtered by project_id."""
+    rows = await SessionRepo.list_all(project_id=project_id)
     return [
         SessionSummary(
             id=r.id,
