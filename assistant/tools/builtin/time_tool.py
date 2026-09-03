@@ -1,7 +1,7 @@
 ﻿"""
-Current time tool.
+当前时间工具。
 
-Returns the current date and time in a human-readable format.
+以人类可读的格式返回当前日期和时间。
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from datetime import datetime, timezone, timedelta
 from ..base import Tool
 from ..registry import register
 
-# China Standard Time (UTC+8)
+# 中国标准时间（UTC+8）
 _CST = timezone(timedelta(hours=8))
 
 

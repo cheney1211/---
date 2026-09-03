@@ -1,4 +1,4 @@
-"""Auto-generate session titles via a lightweight LLM call."""
+"""通过轻量级 LLM 调用自动生成会话标题。"""
 
 from __future__ import annotations
 
@@ -26,10 +26,10 @@ def _is_enabled() -> bool:
 
 
 def _get_title_provider() -> tuple[str, str | None]:
-    """Return (provider_name, model_override) for title generation.
+    """返回用于标题生成的 (provider_name, model_override)。
 
-    Reads TITLE_PROVIDER / TITLE_MODEL env vars; falls back to the main
-    chat provider when not set.
+    读取 TITLE_PROVIDER / TITLE_MODEL 环境变量；如果未设置则回退到
+    主聊天提供者。
     """
     provider = os.getenv("TITLE_PROVIDER") or get_default_provider_name()
     model = os.getenv("TITLE_MODEL") or None
@@ -40,11 +40,11 @@ async def generate_title(
     user_msg: str,
     assistant_msg: str,
 ) -> str | None:
-    """Generate a concise title from the first Q&A pair.
+    """根据第一组问答对生成简洁的标题。
 
-    Returns the title string on success, or ``None`` when the feature is
-    disabled or an error occurs.  Errors are logged but never raised so
-    that callers can treat this as a best-effort side effect.
+    成功时返回标题字符串，功能禁用或发生错误时返回 ``None``。
+    错误会被记录日志但不会抛出异常，以便调用方可以将此视为
+    尽力而为的副作用。
     """
     if not _is_enabled():
         return None
@@ -65,8 +65,8 @@ async def generate_title(
         title = (result.content or "").strip().strip('"').strip("'")
         if not title:
             return None
-        # Clamp to 30 chars as a safety net
+        # 限制最多30个字符作为安全措施
         return title[:30]
     except Exception:
-        logger.exception("Failed to generate session title")
+        logger.exception("生成会话标题失败")
         return None

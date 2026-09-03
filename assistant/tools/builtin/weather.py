@@ -1,7 +1,7 @@
 ﻿"""
-Weather lookup tool.
+天气查询工具。
 
-Uses the free wttr.in API (no API key required).
+使用免费的 wttr.in API（无需 API 密钥）。
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from ..registry import register
 
 
 class WeatherInput(BaseModel):
-    """Input schema for get_weather."""
+    """get_weather 的输入模式。"""
     city: str = Field(description="城市名称，如 'Beijing'、'Shanghai'、'New York'")
 
 

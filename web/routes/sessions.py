@@ -1,4 +1,4 @@
-﻿"""Session management routes."""
+﻿"""会话管理路由。"""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ router = APIRouter()
 
 
 # ---------------------------------------------------------------------------
-# Response models
+# 响应模型
 # ---------------------------------------------------------------------------
 
 class MessageOut(BaseModel):
@@ -51,12 +51,12 @@ class UpdateTitleRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Endpoints
+# 端点
 # ---------------------------------------------------------------------------
 
 @router.get("/sessions", response_model=List[SessionSummary])
 async def list_sessions(project_id: str | None = None):
-    """Return sessions, optionally filtered by project_id."""
+    """返回会话列表，可按 project_id 过滤。"""
     rows = await SessionRepo.list_all(project_id=project_id)
     return [
         SessionSummary(
@@ -85,7 +85,7 @@ async def delete_session(session_id: str):
 
 @router.put("/session/{session_id}/messages")
 async def sync_messages(session_id: str, request: SyncMessagesRequest):
-    """Replace the messages for a session (used after frontend edits/deletions)."""
+    """替换会话的消息（用于前端编辑/删除后的同步）。"""
     agent_msgs = [
         AgentMessage(role=m.role, content=m.content) for m in request.messages
     ]
@@ -95,7 +95,7 @@ async def sync_messages(session_id: str, request: SyncMessagesRequest):
 
 @router.post("/session/{session_id}/generate-title")
 async def generate_session_title(session_id: str, request: GenerateTitleRequest):
-    """Generate a concise title via LLM based on the first Q&A pair."""
+    """根据第一轮问答，通过 LLM 生成简洁的标题。"""
     title = await generate_title(
         request.user_message,
         request.assistant_message,
@@ -107,6 +107,6 @@ async def generate_session_title(session_id: str, request: GenerateTitleRequest)
 
 @router.patch("/session/{session_id}/title")
 async def update_session_title(session_id: str, request: UpdateTitleRequest):
-    """Manually update a session's title."""
+    """手动更新会话标题。"""
     await SessionRepo.set_title(session_id, request.title)
     return {"ok": True}

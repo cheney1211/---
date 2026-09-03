@@ -1,5 +1,5 @@
 """
-Dummy adapter for quick local testing (no network / API key needed).
+用于快速本地测试的虚拟适配器（无需网络/API 密钥）。
 """
 
 from __future__ import annotations

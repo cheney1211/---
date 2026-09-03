@@ -1,7 +1,7 @@
 ﻿"""
-Calculator tool -- safely evaluate mathematical expressions.
+计算器工具 -- 安全地求值数学表达式。
 
-Uses Python's eval() with a restricted namespace (only math functions).
+使用 Python 的 eval() 并限制命名空间（仅包含数学函数）。
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from ..base import Tool
 from ..registry import register
 
-# Build a safe namespace: math module functions + builtins
+# 构建安全的命名空间：math 模块函数 + 内置函数
 _SAFE_NAMESPACE: dict = {k: v for k, v in math.__dict__.items() if not k.startswith("_")}
 _SAFE_NAMESPACE.update({
     "abs": abs,
@@ -29,7 +29,7 @@ _SAFE_NAMESPACE.update({
 
 
 class CalculatorInput(BaseModel):
-    """Input schema for calculate."""
+    """计算器的输入模式。"""
     expression: str = Field(description="要计算的数学表达式，如 '2 + 3 * 4' 或 'sqrt(16) + log(100)'")
 
 

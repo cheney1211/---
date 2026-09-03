@@ -1,9 +1,9 @@
-"""Startup recovery logic for pending tool calls.
+"""待处理工具调用的启动恢复逻辑。
 
-Called once when the FastAPI app starts.
-See DESIGN.md / plan for the safety policy:
-  - running  -> error  (never auto-retry to avoid duplicate side-effects)
-  - queued   -> error  (unless idempotency_key present)
+在 FastAPI 应用启动时调用一次。
+安全策略参见 DESIGN.md / 计划：
+  - running  -> error  （不自动重试，以避免重复的副作用）
+  - queued   -> error  （除非存在幂等键）
 """
 
 from __future__ import annotations
@@ -18,23 +18,23 @@ logger = logging.getLogger("storage.recovery")
 
 
 async def recover_pending_tool_calls() -> List[PendingToolCallRow]:
-    """Scan for interrupted or queued tool calls and mark them safe.
+    """扫描被中断或排队中的工具调用并将其标记为安全状态。
 
-    Returns the list of entries that were transitioned to ``error`` so
-    the caller can log or surface them in the UI.
+    返回已转换为 ``error`` 状态的条目列表，
+    调用方可以记录日志或在界面中展示。
     """
     pendings = await PendingToolRepo.list_resumable()
     handled: List[PendingToolCallRow] = []
 
     for p in pendings:
         if p.status == "running":
-            # Crash during execution -> mark error, require manual retry
+            # 执行过程中崩溃 -> 标记为错误，需要手动重试
             await PendingToolRepo.mark_error(
                 p.id,
-                "Execution interrupted (process crash). Please retry manually.",
+                "执行被中断（进程崩溃）。请手动重试。",
             )
             logger.warning(
-                "Pending tool call #%d [%s] was running at shutdown -> marked error",
+                "待处理的工具调用 #%d [%s] 在关闭时仍在运行 -> 已标记为错误",
                 p.id,
                 p.tool_name,
             )
@@ -42,23 +42,23 @@ async def recover_pending_tool_calls() -> List[PendingToolCallRow]:
 
         elif p.status == "queued":
             if p.idempotency_key:
-                # Safe to auto-retry: reset to queued (already queued, no change needed)
+                # 可以安全地自动重试：保持为 queued 状态（已经排队，无需更改）
                 logger.info(
-                    "Pending tool call #%d [%s] has idempotency_key, "
-                    "left as queued for auto-retry",
+                    "待处理的工具调用 #%d [%s] 存在幂等键，"
+                    "保持为排队状态以自动重试",
                     p.id,
                     p.tool_name,
                 )
             else:
-                # No idempotency guarantee -> mark error
+                # 没有幂等保证 -> 标记为错误
                 await PendingToolRepo.mark_error(
                     p.id,
-                    "App restarted before execution. "
-                    "No idempotency_key, please retry manually.",
+                    "应用在执行前重启。"
+                    "不存在幂等键，请手动重试。",
                 )
                 logger.warning(
-                    "Pending tool call #%d [%s] queued but no idempotency_key "
-                    "-> marked error",
+                    "待处理的工具调用 #%d [%s] 已排队但不存在幂等键 "
+                    "-> 已标记为错误",
                     p.id,
                     p.tool_name,
                 )

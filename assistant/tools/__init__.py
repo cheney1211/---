@@ -1,7 +1,7 @@
 ﻿"""
-Tool package - provides a pluggable tool system for the assistant.
+工具包 - 为助手提供可插拔的工具系统。
 
-Importing this package auto-registers all built-in tools.
+导入此包时会自动注册所有内置工具。
 """
 
 from .base import Tool
@@ -15,7 +15,7 @@ from .registry import (
     execute_tool,
 )
 
-# Auto-register built-in tools by importing the builtin sub-package.
+# 通过导入内置子包来自动注册内置工具。
 from . import builtin  # noqa: F401
 
 __all__ = [

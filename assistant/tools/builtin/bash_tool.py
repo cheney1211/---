@@ -1,11 +1,11 @@
 """
-Bash tool -- execute shell commands.
+Bash 工具 -- 执行 Shell 命令。
 
-Captures stdout and stderr, with configurable timeout.
-Output is truncated to prevent LLM context overflow.
-Working directory is set to the workspace root.
-Commands that attempt to cd outside the workspace are blocked.
-Requires confirmation before execution.
+捕获标准输出和标准错误，支持可配置的超时时间。
+输出会被截断以防止 LLM 上下文溢出。
+工作目录设置为工作区根目录。
+禁止切换到工作区外的目录。
+执行前需要确认。
 """
 
 from __future__ import annotations
@@ -23,28 +23,28 @@ from ..base import Tool
 from ..registry import register
 from ..workspace import get_workspace_root, is_within_workspace, get_platform_hint
 
-_MAX_OUTPUT = 4000  # characters
+_MAX_OUTPUT = 4000  # 字符数
 
 
 class BashInput(BaseModel):
-    """Input schema for bash."""
+    """bash 命令的输入模式。"""
     command: str = Field(description="要执行的 Shell 命令")
     timeout: int = Field(default=30, description="超时时间（秒），默认30秒")
 
 
 def _check_cd_targets(command: str, workspace: Path) -> str | None:
-    """Parse cd commands and check if any target is outside the workspace.
+    """解析 cd 命令并检查是否有目标路径在工作区外。
 
-    Returns an error message if a forbidden cd is found, None otherwise.
-    Handles: cd path, cd "path", pushd path
+    如果发现禁止的 cd 操作则返回错误消息，否则返回 None。
+    处理的命令格式：cd path, cd "path", pushd path
     """
-    # Match cd and pushd commands
+    # 匹配 cd 和 pushd 命令
     pattern = r'(?:cd|pushd)\s+["\']?([^"\';\|&\n]+?)["\']?\s*(?:;|$|&&|\|\|)'
     for match in re.finditer(pattern, command, re.IGNORECASE):
         target = match.group(1).strip()
         if not target or target == "-":
             continue
-        # Skip flags like /D
+        # 跳过类似 /D 的标志参数
         if target.startswith("/") and len(target) == 2:
             continue
 
@@ -76,7 +76,7 @@ class BashTool(Tool):
     def _run(self, command: str, timeout: int = 30) -> str:
         workspace = get_workspace_root()
 
-        # Check for forbidden cd targets
+        # 检查是否有禁止的 cd 目标
         cd_error = _check_cd_targets(command, workspace)
         if cd_error:
             return cd_error
@@ -104,7 +104,7 @@ class BashTool(Tool):
 
         output = "\n".join(parts).strip() if parts else "(无输出)"
 
-        # Truncate if too long
+        # 过长则截断
         if len(output) > _MAX_OUTPUT:
             output = output[:_MAX_OUTPUT] + f"\n... (输出已截断，共 {len(output)} 字符)"
 

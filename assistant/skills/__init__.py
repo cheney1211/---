@@ -1,5 +1,5 @@
 """
-Skills package - all skills are loaded from project skills/ directory as SKILL.md files.
+技能包 - 所有技能从项目 skills/ 目录中以 SKILL.md 文件形式加载。
 """
 from .base import Skill
 from .registry import (
@@ -13,7 +13,7 @@ from .registry import (
     build_skills_system_prompt,
     build_skill_instruction_prompt,
 )
-# Load all skills from disk on import.
+# 导入时从磁盘加载所有技能。
 load_from_disk()
 __all__ = [
     "Skill",

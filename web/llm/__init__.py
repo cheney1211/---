@@ -1,4 +1,4 @@
-"""Backend LLM adapter package."""
+"""后端 LLM 适配器包。"""
 
 from .registry import (
     get_adapter,

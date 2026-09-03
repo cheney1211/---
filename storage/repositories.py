@@ -1,4 +1,4 @@
-"""Repository layer: async DB helpers for sessions, messages, pending tool calls."""
+"""仓库层：会话、消息、待处理工具调用的异步数据库辅助方法。"""
 
 from __future__ import annotations
 
@@ -15,17 +15,17 @@ from .models import MessageRow, PendingToolCallRow, ProjectRow, SessionRow
 
 
 # ---------------------------------------------------------------------------
-# ProjectRepo
+# 项目仓库
 # ---------------------------------------------------------------------------
 
 
 class ProjectRepo:
-    """CRUD for projects."""
+    """项目的增删改查操作。"""
 
     @staticmethod
-    async def create(project_id: str, name: str) -> ProjectRow:
+    async def create(project_id: str, name: str, root_path: str | None = None) -> ProjectRow:
         async with session_scope() as s:
-            row = ProjectRow(id=project_id, name=name)
+            row = ProjectRow(id=project_id, name=name, root_path=root_path)
             s.add(row)
             await s.flush()
             return row
@@ -52,6 +52,15 @@ class ProjectRepo:
             return True
 
     @staticmethod
+    async def set_root_path(project_id: str, root_path: str) -> bool:
+        async with session_scope() as s:
+            row = await s.get(ProjectRow, project_id)
+            if row is None:
+                return False
+            row.root_path = root_path
+            return True
+
+    @staticmethod
     async def delete(project_id: str) -> bool:
         async with session_scope() as s:
             row = await s.get(ProjectRow, project_id)
@@ -68,12 +77,12 @@ class ProjectRepo:
 
 
 # ---------------------------------------------------------------------------
-# SessionRepo
+# 会话仓库
 # ---------------------------------------------------------------------------
 
 
 class SessionRepo:
-    """CRUD for chat sessions."""
+    """聊天会话的增删改查操作。"""
 
     @staticmethod
     async def get_or_create(
@@ -114,7 +123,7 @@ class SessionRepo:
 
     @staticmethod
     async def list_all(project_id: str | None = None) -> List[SessionRow]:
-        """Return sessions ordered by most recently updated, optionally filtered by project."""
+        """返回按最近更新排序的会话列表，可选按项目筛选。"""
         async with session_scope() as s:
             stmt = select(SessionRow).order_by(SessionRow.updated_at.desc())
             if project_id is not None:
@@ -136,14 +145,27 @@ class SessionRepo:
             if row:
                 row.title = title
 
+    @staticmethod
+    async def set_summary(session_id: str, summary: str) -> None:
+        async with session_scope() as s:
+            row = await s.get(SessionRow, session_id)
+            if row:
+                row.summary = summary
+
+    @staticmethod
+    async def get_summary(session_id: str) -> str | None:
+        async with session_scope() as s:
+            row = await s.get(SessionRow, session_id)
+            return row.summary if row else None
+
 
 # ---------------------------------------------------------------------------
-# MessageRepo
+# 消息仓库
 # ---------------------------------------------------------------------------
 
 
 class MessageRepo:
-    """Read/write chat messages."""
+    """聊天消息的读写操作。"""
 
     @staticmethod
     async def append(
@@ -153,9 +175,9 @@ class MessageRepo:
         kind: str = "user",
         is_chunk: bool = False,
     ) -> MessageRow:
-        """Write a single message to the DB.
+        """将单条消息写入数据库。
 
-        *kind* must be one of: user | assistant | tool_request | tool_result | status.
+        *kind* 必须是以下之一：user | assistant | tool_request | tool_result | status。
         """
         async with session_scope() as s:
             row = MessageRow(
@@ -176,9 +198,9 @@ class MessageRepo:
     async def list_recent(
         session_id: str, *, limit: int = 200
     ) -> List[AgentMessage]:
-        """Load the most recent messages to rebuild an in-memory AgentState.
+        """加载最近的消息以重建内存中的 AgentState。
 
-        Skips chunk-only rows and status rows.
+        跳过仅包含分片的行和状态行。
         """
         async with session_scope() as s:
             stmt = (
@@ -218,16 +240,16 @@ class MessageRepo:
     async def sync_messages(
         session_id: str, messages: List[AgentMessage], turns: int
     ) -> None:
-        """Replace all messages for a session (frontend delete/edit sync)."""
+        """替换某个会话的所有消息（用于前端删除/编辑同步）。"""
         async with session_scope() as s:
-            # Delete old
+            # 删除旧消息
             old = await s.execute(
                 select(MessageRow).where(MessageRow.session_id == session_id)
             )
             for row in old.scalars():
                 await s.delete(row)
 
-            # Insert new
+            # 插入新消息
             for i, msg in enumerate(messages):
                 kind = msg.role if msg.role in ("user", "assistant", "system") else "user"
                 s.add(
@@ -239,19 +261,19 @@ class MessageRepo:
                     )
                 )
 
-            # Update turns
+            # 更新轮次
             session_row = await s.get(SessionRow, session_id)
             if session_row:
                 session_row.turns = turns
 
 
 # ---------------------------------------------------------------------------
-# PendingToolRepo
+# 待处理工具调用仓库
 # ---------------------------------------------------------------------------
 
 
 class PendingToolRepo:
-    """Manage pending tool calls (crash recovery)."""
+    """管理待处理的工具调用（崩溃恢复）。"""
 
     @staticmethod
     async def create(
@@ -302,9 +324,9 @@ class PendingToolRepo:
 
     @staticmethod
     async def list_resumable(session_id: str | None = None) -> List[PendingToolCallRow]:
-        """Return pending calls that need recovery attention.
+        """返回需要恢复处理的待处理调用。
 
-        Includes queued and running entries.
+        包括排队中和运行中的条目。
         """
         async with session_scope() as s:
             stmt = select(PendingToolCallRow).where(

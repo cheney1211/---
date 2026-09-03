@@ -1,8 +1,8 @@
-"""Confirmation manager for human-in-the-loop tool approval.
+"""人工确认管理器，用于工具执行审批的人机交互环节。
 
-When a tool with requires_confirmation=True is about to execute,
-the system pauses and waits for the user to approve or reject via
-a confirmation_id. Used by both Web (SSE + POST) and CLI (prompt) flows.
+当一个设置了 requires_confirmation=True 的工具即将执行时，
+系统会暂停并等待用户通过 confirmation_id 进行批准或拒绝。
+此模块被 Web 端（SSE + POST）和 CLI 端（命令行提示）流程共同使用。
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ logger = logging.getLogger("confirmation")
 
 @dataclass
 class ConfirmationRequest:
-    """A pending confirmation request."""
+    """一个待处理的确认请求。"""
     confirmation_id: str
     tool_name: str
     tool_args: Dict[str, Any]
@@ -27,14 +27,14 @@ class ConfirmationRequest:
 
 
 class ConfirmationManager:
-    """Manages pending confirmation requests.
+    """管理待处理的确认请求。
 
-    Workflow:
-      1. create_request() -> returns ConfirmationRequest with a confirmation_id
-      2. Yield a confirmation_required event to the frontend (SSE) or prompt (CLI)
-      3. await request._future  (pauses execution)
-      4. resolve() is called by the confirm API endpoint or CLI input
-      5. Execution resumes with the user's decision
+    工作流程：
+      1. create_request() -> 返回带有 confirmation_id 的 ConfirmationRequest
+      2. 向前端（SSE）或命令行提示（CLI）发出 confirmation_required 事件
+      3. await request._future（暂停执行）
+      4. resolve() 由确认 API 端点或 CLI 输入调用
+      5. 根据用户的决定恢复执行
     """
 
     def __init__(self) -> None:
@@ -46,7 +46,7 @@ class ConfirmationManager:
         tool_args: Dict[str, Any],
         description: str = "",
     ) -> ConfirmationRequest:
-        """Create a new confirmation request and register it."""
+        """创建一个新的确认请求并将其注册。"""
         req = ConfirmationRequest(
             confirmation_id=str(uuid.uuid4()),
             tool_name=tool_name,
@@ -56,38 +56,38 @@ class ConfirmationManager:
         )
         self._pending[req.confirmation_id] = req
         logger.info(
-            "Created confirmation request %s for tool '%s'",
-            req.confirmation_id,
+            "已为工具 '%s' 创建确认请求 %s",
             tool_name,
+            req.confirmation_id,
         )
         return req
 
     def resolve(self, confirmation_id: str, approved: bool) -> bool:
-        """Resolve a pending confirmation request.
+        """处理一个待处理的确认请求。
 
-        Returns True if the request was found and resolved, False otherwise.
+        如果请求被找到并已处理则返回 True，否则返回 False。
         """
         req = self._pending.pop(confirmation_id, None)
         if req is None:
-            logger.warning("Confirmation request %s not found", confirmation_id)
+            logger.warning("确认请求 %s 未找到", confirmation_id)
             return False
         if req._future.done():
-            logger.warning("Confirmation request %s already resolved", confirmation_id)
+            logger.warning("确认请求 %s 已经处理过了", confirmation_id)
             return False
         req._future.set_result(approved)
         logger.info(
-            "Resolved confirmation %s: %s",
+            "已处理确认请求 %s：%s",
             confirmation_id,
-            "approved" if approved else "rejected",
+            "已批准" if approved else "已拒绝",
         )
         return True
 
     def get_request(self, confirmation_id: str) -> Optional[ConfirmationRequest]:
-        """Get a pending request by ID."""
+        """根据 ID 获取待处理的请求。"""
         return self._pending.get(confirmation_id)
 
     def list_pending(self) -> list[Dict[str, Any]]:
-        """List all pending confirmation requests."""
+        """列出所有待处理的确认请求。"""
         return [
             {
                 "confirmation_id": req.confirmation_id,
@@ -99,20 +99,20 @@ class ConfirmationManager:
         ]
 
     async def wait_for_decision(self, confirmation_id: str, timeout: float = 300.0) -> bool:
-        """Wait for the user's decision. Returns True if approved, False if rejected.
+        """等待用户的决定。批准返回 True，拒绝返回 False。
 
-        Raises TimeoutError if no response within timeout seconds.
+        如果在超时时间内未收到响应则抛出 TimeoutError。
         """
         req = self._pending.get(confirmation_id)
         if req is None:
-            raise ValueError(f"Confirmation request {confirmation_id} not found")
+            raise ValueError(f"确认请求 {confirmation_id} 未找到")
         try:
             result = await asyncio.wait_for(req._future, timeout=timeout)
             return bool(result)
         except asyncio.TimeoutError:
             self._pending.pop(confirmation_id, None)
             raise TimeoutError(
-                f"Confirmation request {confirmation_id} timed out after {timeout}s"
+                f"确认请求 {confirmation_id} 在 {timeout} 秒后超时"
             )
 
     @property

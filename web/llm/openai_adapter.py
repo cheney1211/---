@@ -1,8 +1,8 @@
 """
-OpenAI-compatible adapter implementation.
+OpenAI 兼容适配器实现。
 
-This adapter wraps langchain-openai ChatOpenAI and translates agent
-message dicts to LangChain messages.
+此适配器封装了 langchain-openai 的 ChatOpenAI，并将代理消息字典
+转换为 LangChain 消息。
 """
 
 from __future__ import annotations
@@ -75,7 +75,7 @@ class OpenAIAdapter(LLMAdapter):
 
         full_text = "".join(full_text_parts)
 
-        # Check if the LLM returned tool calls
+        # 检查 LLM 是否返回了工具调用
         if accumulated and hasattr(accumulated, "tool_calls") and accumulated.tool_calls:
             yield {
                 "event": "tool_calls",

@@ -1,8 +1,8 @@
 """
-Ollama adapter.
+Ollama 适配器。
 
-Wraps langchain-ollama ChatOllama for local model inference.
-Falls back to OpenAI-compatible mode if langchain_ollama is not installed.
+封装 langchain-ollama 的 ChatOllama 用于本地模型推理。
+如果未安装 langchain_ollama，则回退到 OpenAI 兼容模式。
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ class OllamaAdapter(LLMAdapter):
         self._base_url = base_url or _DEFAULT_BASE_URL
         self._temperature = temperature
 
-        # Try native langchain-ollama first; fall back to OpenAI-compatible mode.
+        # 优先尝试原生 langchain-ollama；失败则回退到 OpenAI 兼容模式。
         try:
             from langchain_ollama import ChatOllama
 
@@ -89,6 +89,7 @@ class OllamaAdapter(LLMAdapter):
 
         full_text = "".join(full_text_parts)
 
+        # 检查 LLM 是否返回了工具调用
         if accumulated and hasattr(accumulated, "tool_calls") and accumulated.tool_calls:
             yield {
                 "event": "tool_calls",

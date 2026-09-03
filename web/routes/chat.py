@@ -1,4 +1,4 @@
-﻿"""Chat and confirmation routes."""
+﻿"""聊天和确认路由。"""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ router = APIRouter()
 
 
 # ---------------------------------------------------------------------------
-# Request / Response models
+# 请求/响应模型
 # ---------------------------------------------------------------------------
 
 class ChatRequest(BaseModel):
@@ -39,12 +39,12 @@ class ConfirmRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Chat endpoints
+# 聊天端点
 # ---------------------------------------------------------------------------
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    """Non-streaming REST endpoint."""
+    """非流式 REST 端点。"""
     session_id, state = await get_or_create_session(
         request.session_id, project_id=request.project_id,
         provider=request.provider, model=request.model,
@@ -59,33 +59,42 @@ async def chat(request: ChatRequest):
 
 @router.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
-    """SSE streaming endpoint."""
+    """SSE 流式端点。"""
     session_id, state = await get_or_create_session(
         request.session_id, project_id=request.project_id,
         provider=request.provider, model=request.model,
     )
 
     async def event_generator():
-        async for event in process_message_stream(
-            session_id, state, request.message,
-            project_id=request.project_id,
-            provider=request.provider, model=request.model, mode=request.mode,
-        ):
+        try:
+            async for event in process_message_stream(
+                session_id, state, request.message,
+                project_id=request.project_id,
+                provider=request.provider, model=request.model, mode=request.mode,
+            ):
+                yield {
+                    "event": event["event"],
+                    "data": json.dumps(event["data"]),
+                }
+        except Exception as e:
+            import traceback
+            print(f"[SSE Error] {e}")
+            traceback.print_exc()
             yield {
-                "event": event["event"],
-                "data": json.dumps(event["data"]),
+                "event": "error",
+                "data": json.dumps({"error": str(e)}),
             }
 
     return EventSourceResponse(event_generator())
 
 
 # ---------------------------------------------------------------------------
-# Confirmation endpoints
+# 确认端点
 # ---------------------------------------------------------------------------
 
 @router.post("/confirm/{confirmation_id}")
 async def confirm_tool(confirmation_id: str, request: ConfirmRequest):
-    """Approve or reject a pending tool confirmation."""
+    """批准或拒绝待处理的工具确认请求。"""
     found = confirmation_manager.resolve(confirmation_id, request.approved)
     if not found:
         return JSONResponse(
@@ -101,5 +110,5 @@ async def confirm_tool(confirmation_id: str, request: ConfirmRequest):
 
 @router.get("/confirm/pending")
 async def list_pending_confirmations():
-    """List all pending confirmation requests."""
+    """列出所有待处理的确认请求。"""
     return {"pending": confirmation_manager.list_pending()}

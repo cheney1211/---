@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import inspect
 from typing import AsyncIterable, Callable, Iterable, List
@@ -7,8 +7,8 @@ from .core import AgentMessage, AgentRunState, AgentState
 from .interfaces import ProviderProtocol
 
 
-# Callback type: called for every message yielded by the provider.
-# Chunk messages (metadata["chunk"]=True) are display-only and NOT stored in state.
+# 回调类型：针对 provider 产出的每条消息调用。
+# 流式分片消息（metadata["chunk"]=True）仅用于显示，不会存入状态。
 OnMessageCallback = Callable[[AgentMessage], None]
 
 
@@ -56,21 +56,21 @@ class AgentLoop:
 
             if inspect.isawaitable(new_messages) or hasattr(new_messages, "__aiter__"):
                 raise TypeError(
-                    "AgentLoop.run received an async provider. "
-                    "Use the async runner path (e.g. app.create_background_task) "
-                    "or keep run_in_executor around a sync adapter."
+                    "AgentLoop.run 收到了一个异步 provider。"
+                    "请使用异步运行路径（例如 app.create_background_task），"
+                    "或者使用 run_in_executor 包装同步适配器。"
                 )
 
             for new_message in new_messages:
                 is_chunk = new_message.metadata.get("chunk", False)
 
-                # Streaming chunks: notify display layer but do NOT persist.
+                # 流式分片：通知显示层，但不持久化。
                 if is_chunk:
                     if on_message:
                         on_message(new_message)
                     continue
 
-                # Final message: persist and notify.
+                # 最终消息：持久化并通知。
                 state.append(new_message)
                 if on_message:
                     on_message(new_message)

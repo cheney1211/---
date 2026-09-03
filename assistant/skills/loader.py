@@ -1,17 +1,17 @@
 """
-File-based skill loader.
+基于文件的技能加载器。
 
-Scans a directory for skill folders containing SKILL.md files,
-parses YAML frontmatter to extract metadata, and registers them.
+扫描目录中包含 SKILL.md 文件的技能文件夹，
+解析 YAML frontmatter 以提取元数据，并将其注册。
 
-Directory layout:
+目录结构：
     skills/
       calculator/
         SKILL.md
       weather/
         SKILL.md
 
-SKILL.md format:
+SKILL.md 格式：
     ---
     name: calculator
     version: "1.0.0"
@@ -42,7 +42,7 @@ _SKILL_FILENAME = "SKILL.md"
 
 
 def get_skills_directory() -> Path:
-    """Return the project-level skills directory, creating it if needed."""
+    """返回项目级别的技能目录，如果不存在则创建。"""
     project_root = Path(__file__).resolve().parent.parent.parent
     skills_dir = project_root / "skills"
     skills_dir.mkdir(parents=True, exist_ok=True)
@@ -50,16 +50,16 @@ def get_skills_directory() -> Path:
 
 
 def parse_skill_md(content: str) -> Optional[Skill]:
-    """Parse a SKILL.md string into a Skill object.
+    """将 SKILL.md 字符串解析为 Skill 对象。
 
-    Expects YAML frontmatter delimited by '---' at the top.
-    The markdown body below the frontmatter becomes the instruction.
-    Returns None if the content has no valid frontmatter.
+    期望顶部以 '---' 分隔的 YAML frontmatter。
+    frontmatter 下方的 markdown 正文将作为指令内容。
+    如果内容没有有效的 frontmatter，则返回 None。
     """
-    # Match: ---\n<yaml>\n---\n<markdown body>
+    # 匹配：---\n<yaml>\n---\n<markdown正文>
     match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)", content, re.DOTALL)
     if not match:
-        logger.warning("SKILL.md missing valid frontmatter (expected --- delimited YAML)")
+        logger.warning("SKILL.md 缺少有效的 frontmatter（期望以 --- 分隔的 YAML）")
         return None
 
     yaml_str, body = match.group(1), match.group(2).strip()
@@ -67,11 +67,11 @@ def parse_skill_md(content: str) -> Optional[Skill]:
     try:
         meta = yaml.safe_load(yaml_str)
     except yaml.YAMLError as e:
-        logger.warning("Failed to parse skill frontmatter: %s", e)
+        logger.warning("解析技能 frontmatter 失败：%s", e)
         return None
 
     if not isinstance(meta, dict) or "name" not in meta:
-        logger.warning("Skill frontmatter missing required 'name' field")
+        logger.warning("技能 frontmatter 缺少必需的 'name' 字段")
         return None
 
     return Skill(
@@ -86,9 +86,9 @@ def parse_skill_md(content: str) -> Optional[Skill]:
 
 
 def load_skills_from_directory(skills_dir: Path | None = None) -> List[Skill]:
-    """Scan a skills directory and return parsed Skill objects.
+    """扫描技能目录并返回解析后的 Skill 对象列表。
 
-    Looks for subdirectories containing SKILL.md.
+    查找包含 SKILL.md 的子目录。
     """
     skills_dir = skills_dir or get_skills_directory()
     if not skills_dir.is_dir():
@@ -104,12 +104,12 @@ def load_skills_from_directory(skills_dir: Path | None = None) -> List[Skill]:
         try:
             content = skill_file.read_text(encoding="utf-8")
         except Exception as e:
-            logger.warning("Failed to read %s: %s", skill_file, e)
+            logger.warning("读取 %s 失败：%s", skill_file, e)
             continue
         skill = parse_skill_md(content)
         if skill:
             skills.append(skill)
-            logger.info("Loaded skill '%s' from %s", skill.name, skill_file)
+            logger.info("已从 %s 加载技能 '%s'", skill_file, skill.name)
 
     return skills
 
@@ -124,7 +124,7 @@ def create_skill_on_disk(
     author: str = "agent",
     skills_dir: Path | None = None,
 ) -> Path:
-    """Write a new SKILL.md to disk. Returns the path to the created file."""
+    """将新的 SKILL.md 写入磁盘。返回所创建文件的路径。"""
     skills_dir = skills_dir or get_skills_directory()
     skill_dir = skills_dir / name
     skill_dir.mkdir(parents=True, exist_ok=True)
@@ -143,5 +143,5 @@ def create_skill_on_disk(
     content = f"---\n{yaml_str}---\n{instruction}\n"
 
     skill_file.write_text(content, encoding="utf-8")
-    logger.info("Created skill '%s' at %s", name, skill_file)
+    logger.info("已创建技能 '%s'，路径为 %s", name, skill_file)
     return skill_file

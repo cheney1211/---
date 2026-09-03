@@ -1,4 +1,4 @@
-﻿"""Shared message classification helpers."""
+﻿"""共享的消息分类辅助工具。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from assistant.core import AgentMessage
 
 
 def classify_and_extract(msg: AgentMessage) -> tuple[str, bool]:
-    """Return (kind, is_chunk) for a given AgentMessage."""
+    """返回给定 AgentMessage 的 (kind, is_chunk)。"""
     if msg.metadata.get("chunk"):
         return "status", True
     if msg.role == "tool":

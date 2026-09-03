@@ -1,4 +1,4 @@
-"""Database engine and session factory for SQLite."""
+"""SQLite 数据库引擎和会话工厂。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import DeclarativeBase
 
 # ---------------------------------------------------------------------------
-# Config
+# 配置
 # ---------------------------------------------------------------------------
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -26,7 +26,7 @@ def _db_url() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Base / Engine / Session
+# 基类 / 引擎 / 会话
 # ---------------------------------------------------------------------------
 
 
@@ -41,12 +41,12 @@ _session_factory: async_sessionmaker[AsyncSession] | None = None
 def get_engine():
     global _engine
     if _engine is None:
-        raise RuntimeError("Database not initialised. Call init_db() first.")
+        raise RuntimeError("数据库未初始化，请先调用 init_db()。")
     return _engine
 
 
 async def init_db() -> None:
-    """Create engine, enable WAL, and create all tables if absent."""
+    """创建引擎、启用 WAL 模式，并在表不存在时创建所有表。"""
     global _engine, _session_factory
     if _engine is not None:
         return
@@ -54,26 +54,18 @@ async def init_db() -> None:
     _engine = create_async_engine(url, echo=False)
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
 
-    # WAL mode for better concurrency
+    # 使用 WAL 模式以获得更好的并发性能
     async with _engine.begin() as conn:
         await conn.exec_driver_sql("PRAGMA journal_mode=WAL")
         await conn.exec_driver_sql("PRAGMA foreign_keys=ON")
         await conn.run_sync(Base.metadata.create_all)
 
-        # Lightweight migration: add project_id column to sessions if missing
-        result = await conn.exec_driver_sql("PRAGMA table_info(sessions)")
-        columns = {row[1] for row in result}
-        if "project_id" not in columns:
-            await conn.exec_driver_sql(
-                "ALTER TABLE sessions ADD COLUMN project_id TEXT"
-            )
-
 
 @asynccontextmanager
 async def session_scope() -> AsyncGenerator[AsyncSession, None]:
-    """Provide a transactional async session scope."""
+    """提供事务性的异步会话上下文。"""
     if _session_factory is None:
-        raise RuntimeError("Database not initialised. Call init_db() first.")
+        raise RuntimeError("数据库未初始化，请先调用 init_db()。")
     async with _session_factory() as session:
         async with session.begin():
             yield session

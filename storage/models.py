@@ -1,4 +1,4 @@
-"""SQLAlchemy ORM models for chat persistence."""
+"""聊天持久化的 SQLAlchemy ORM 模型。"""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from .database import Base
 
 
 # ---------------------------------------------------------------------------
-# helpers
+# 辅助函数
 # ---------------------------------------------------------------------------
 
 def _utcnow() -> _dt.datetime:
@@ -30,7 +30,7 @@ def _utcnow() -> _dt.datetime:
 
 
 # ---------------------------------------------------------------------------
-# Project
+# 项目
 # ---------------------------------------------------------------------------
 
 
@@ -39,6 +39,7 @@ class ProjectRow(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(256))
+    root_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # 项目磁盘路径
     created_at: Mapped[_dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -52,7 +53,7 @@ class ProjectRow(Base):
 
 
 # ---------------------------------------------------------------------------
-# Session
+# 会话
 # ---------------------------------------------------------------------------
 
 
@@ -64,6 +65,7 @@ class SessionRow(Base):
         String(64), ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True
     )
     title: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # 历史消息压缩摘要
     provider: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     turns: Mapped[int] = mapped_column(Integer, default=0)
@@ -84,7 +86,7 @@ class SessionRow(Base):
 
 
 # ---------------------------------------------------------------------------
-# Message
+# 消息
 # ---------------------------------------------------------------------------
 
 
@@ -116,7 +118,7 @@ class MessageRow(Base):
 
 
 # ---------------------------------------------------------------------------
-# Pending tool call (crash-recovery table)
+# 待处理的工具调用（崩溃恢复表）
 # ---------------------------------------------------------------------------
 
 

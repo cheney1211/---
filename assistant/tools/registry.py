@@ -1,8 +1,8 @@
 ﻿"""
-Global tool registry.
+全局工具注册表。
 
-Tools register themselves at import time via register().
-The registry provides lookup, listing, and BaseTool exports.
+工具在导入时通过 register() 自注册。
+注册表提供查找、列举和 BaseTool 导出功能。
 """
 
 from __future__ import annotations
@@ -16,48 +16,48 @@ _registry: Dict[str, Tool] = {}
 
 
 def register(tool: Tool) -> None:
-    """Register a tool instance.  Overwrites any previous tool with the same name."""
+    """注册一个工具实例。若已存在同名工具则覆盖。"""
     _registry[tool.name] = tool
 
 
 def get_tool(name: str) -> Tool:
-    """Look up a registered tool by name.  Raises ValueError if not found."""
+    """按名称查找已注册的工具。未找到时抛出 ValueError。"""
     if name not in _registry:
-        available = ", ".join(sorted(_registry)) or "(none)"
-        raise ValueError(f"Unknown tool: {name!r}. Available: {available}")
+        available = ", ".join(sorted(_registry)) or "(无)"
+        raise ValueError(f"未知工具: {name!r}。可用工具: {available}")
     return _registry[name]
 
 
 def get_all_tools() -> List[Tool]:
-    """Return all registered BaseTool instances."""
+    """返回所有已注册的 BaseTool 实例。"""
     return list(_registry.values())
 
 
 def get_tools() -> List[Tool]:
-    """Return all registered BaseTool instances (alias for get_all_tools)."""
+    """返回所有已注册的 BaseTool 实例（get_all_tools 的别名）。"""
     return get_all_tools()
 
 
 def list_tools() -> List[Dict[str, str]]:
-    """Return a summary list of registered tools (name + description)."""
+    """返回已注册工具的摘要列表（名称 + 描述）。"""
     return [{"name": t.name, "description": t.description} for t in _registry.values()]
 
 
 def execute_tool(name: str, arguments: Any) -> str:
-    """Execute a tool by name with the given arguments.
+    """按名称执行工具并传入参数。
 
-    *arguments* can be a dict (already parsed) or a JSON string.
-    Returns the tool's string result, or an error message on failure.
+    *arguments* 可以是 dict（已解析）或 JSON 字符串。
+    返回工具的字符串结果，失败时返回错误信息。
     """
     tool = get_tool(name)
     if isinstance(arguments, str):
         try:
             arguments = json.loads(arguments)
         except json.JSONDecodeError:
-            return f"Error: invalid JSON arguments for tool '{name}': {arguments}"
+            return f"错误: 工具 '{name}' 的参数不是有效的 JSON: {arguments}"
     if not isinstance(arguments, dict):
         arguments = {}
     try:
         return tool.invoke(arguments)
     except Exception as e:
-        return f"Error executing tool '{name}': {e}"
+        return f"执行工具 '{name}' 时出错: {e}"

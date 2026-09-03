@@ -1,4 +1,4 @@
-﻿"""Skill and tool routes."""
+﻿"""技能和工具路由。"""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ router = APIRouter()
 
 
 # ---------------------------------------------------------------------------
-# Response models
+# 响应模型
 # ---------------------------------------------------------------------------
 
 class SkillSummary(BaseModel):
@@ -44,24 +44,24 @@ class SkillDetail(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Endpoints
+# 端点
 # ---------------------------------------------------------------------------
 
 @router.get("/tools")
 async def tools():
-    """List all registered tools."""
+    """列出所有已注册的工具。"""
     return {"tools": list_all_tools()}
 
 
 @router.get("/skills", response_model=List[SkillSummary])
 async def skills():
-    """List all registered skills."""
+    """列出所有已注册的技能。"""
     return list_skills()
 
 
 @router.get("/skills/{skill_name}", response_model=SkillDetail)
 async def skill_detail(skill_name: str):
-    """Return details for a given skill, including tool metadata."""
+    """返回指定技能的详细信息，包括工具元数据。"""
     try:
         detail = get_skill_details(skill_name)
     except ValueError as exc:
@@ -71,6 +71,6 @@ async def skill_detail(skill_name: str):
 
 @router.post("/skills/reload")
 async def skills_reload():
-    """Reload all skills from disk."""
+    """从磁盘重新加载所有技能。"""
     count = reload_skills()
     return {"status": "ok", "skill_count": count}

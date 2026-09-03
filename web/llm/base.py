@@ -20,7 +20,7 @@ from langchain_core.messages import (
 
 
 class LLMAdapter(ABC):
-    """Base adapter with shared message conversion logic."""
+    """带共享消息转换逻辑的基类适配器。"""
 
     @property
     def llm(self) -> BaseChatModel:
@@ -33,10 +33,10 @@ class LLMAdapter(ABC):
         *,
         system_message: str | None = None,
     ) -> List[BaseMessage]:
-        """Convert agent message dicts to LangChain messages.
+        """将代理消息字典转换为 LangChain 消息。
 
-        Handles standard roles (system/user/assistant) as well as
-        tool-calling roles (assistant with tool_calls, tool results).
+        处理标准角色（system/user/assistant）以及
+        工具调用角色（带 tool_calls 的 assistant、tool 结果）。
         """
         lc: List[BaseMessage] = []
         if system_message:

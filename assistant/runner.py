@@ -1,6 +1,6 @@
-"""Core AgentRunner: business logic for driving the agent loop.
+"""核心 AgentRunner：驱动智能体循环的业务逻辑。
 
-UI-specific code (CLI, web) lives in separate modules.
+UI 相关代码（CLI、Web）位于单独的模块中。
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ class AgentRunnerConfig:
     name: str = "assistant"
     agent_name: str = "coco"
     user_name: str = "YOU"
-    system_message: str | None = "You are a helpful assistant."
+    system_message: str | None = "你是一个有帮助的助手。"
     max_turns: int = 16
     stop_keywords: List[str] | None = None
     stream: bool = False
@@ -59,7 +59,7 @@ class AgentRunner:
         try:
             sample = provider(self._state)
         except Exception:
-            # Conservative: assume sync when provider cannot be sampled.
+            # 保守策略：当 provider 无法采样时，假定为同步。
             return False
         return inspect.isawaitable(sample) or hasattr(sample, "__aiter__")
 

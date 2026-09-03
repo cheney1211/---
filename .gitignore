@@ -14,3 +14,9 @@ frontend/tsconfig.tsbuildinfo
 小助手.md
 flowchart.html
 assistant/prompts/system_prompt.md
+
+# Desktop (Electron)
+desktop/node_modules/
+desktop/dist-electron/
+desktop/dist-react/
+desktop/release/

@@ -1,0 +1,49 @@
+{
+  "name": "coco-ai-desktop",
+  "version": "1.0.0",
+  "description": "Coco AI 助手 - 桌面应用",
+  "main": "dist-electron/main.js",
+  "author": "Coco Team",
+  "license": "MIT",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:electron\"",
+    "dev:frontend": "vite",
+    "dev:electron": "tsc -p tsconfig.electron.json && electron .",
+    "dev:backend": "cd ../ && python -m web.app",
+    "build": "npm run build:frontend && npm run build:electron",
+    "build:frontend": "vite build",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "build:backend": "python scripts/build-backend.py",
+    "package": "npm run build && npm run build:backend && electron-builder",
+    "package:win": "npm run build && npm run build:backend && electron-builder --win",
+    "package:mac": "npm run build && npm run build:backend && electron-builder --mac",
+    "package:linux": "npm run build && npm run build:backend && electron-builder --linux",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0",
+    "rehype-highlight": "^7.0.2",
+    "rehype-katex": "^7.0.1",
+    "katex": "^0.18.4",
+    "lucide-react": "^0.539.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^4.5.2",
+    "autoprefixer": "^10.4.21",
+    "concurrently": "^9.2.0",
+    "electron": "^33.4.0",
+    "electron-builder": "^25.1.8",
+    "postcss": "^8.5.3",
+    "tailwindcss": "^4.1.4",
+    "@tailwindcss/postcss": "^4.1.4",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.2",
+    "wait-on": "^8.0.3"
+  }
+}

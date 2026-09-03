@@ -1,7 +1,7 @@
 """
-Built-in tools - auto-registered when imported.
-Note: call_skill is NOT auto-imported here because it requires
-LLM configuration via call_skill.configure() before registration.
+内置工具 - 导入时自动注册。
+注意：call_skill 不会在此自动导入，因为它需要在注册前
+通过 call_skill.configure() 配置 LLM。
 """
 
 from . import weather  # noqa: F401

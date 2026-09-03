@@ -1,4 +1,4 @@
-"""System routes: health check, provider listing, and workspace management."""
+"""系统路由：健康检查、提供者列表和工作空间管理。"""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ async def health():
 
 @router.get("/providers")
 async def providers():
-    """List all registered LLM providers."""
+    """列出所有已注册的 LLM 提供者。"""
     return {
         "default": get_default_provider_name(),
         "providers": list_providers(),
@@ -30,7 +30,7 @@ async def providers():
 
 
 # ---------------------------------------------------------------------------
-# Workspace management
+# 工作空间管理
 # ---------------------------------------------------------------------------
 
 class WorkspaceUpdate(BaseModel):
@@ -38,7 +38,7 @@ class WorkspaceUpdate(BaseModel):
 
 
 def _search_roots() -> list[Path]:
-    """Return common root directories to search for folder names."""
+    """返回用于搜索文件夹名称的常见根目录列表。"""
     roots: list[Path] = [get_workspace_root(), get_workspace_root().parent, Path.home()]
     if os.name == "nt":
         for drive in "CDEFG":
@@ -51,7 +51,7 @@ def _search_roots() -> list[Path]:
 
 
 def _find_matches(name: str) -> list[str]:
-    """Find all directories matching *name* under common search roots."""
+    """在常见搜索根目录下查找匹配 *name* 的所有目录。"""
     seen: set[str] = set()
     matches: list[str] = []
     for root in _search_roots():
@@ -65,17 +65,17 @@ def _find_matches(name: str) -> list[str]:
 
 @router.get("/workspace")
 async def get_workspace():
-    """Return the current workspace folder name."""
+    """返回当前工作空间文件夹名称。"""
     root = get_workspace_root()
     return {"workspace_root": root.name}
 
 
 @router.get("/workspace/search")
 async def search_workspace(name: str):
-    """Search for directories matching *name* across common locations.
+    """在常见位置中搜索匹配 *name* 的目录。
 
-    Returns a list of absolute paths. The frontend can use this to let the
-    user pick the correct one when showDirectoryPicker only gives a folder name.
+    返回绝对路径列表。当前端只能通过 showDirectoryPicker 获取文件夹名称时，
+    可以使用此接口让用户选择正确的目录。
     """
     name = name.strip()
     if not name:
@@ -85,22 +85,22 @@ async def search_workspace(name: str):
 
 @router.put("/workspace")
 async def update_workspace(request: WorkspaceUpdate):
-    """Update the workspace root directory.
+    """更新工作空间根目录。
 
-    Accepts either an absolute path or a folder name.
-    If a folder name matches multiple locations, returns them for the user to choose.
+    接受绝对路径或文件夹名称。
+    如果文件夹名称匹配多个位置，则返回列表供用户选择。
     """
     raw = request.path.strip()
     if not raw:
         return JSONResponse(status_code=400, content={"error": "路径不能为空"})
 
-    # Absolute path that exists → use directly
+    # 绝对路径且存在 -> 直接使用
     candidate = Path(raw)
     if candidate.is_absolute() and candidate.is_dir():
         new_root = set_workspace_root(raw)
         return {"workspace_root": new_root.name}
 
-    # Folder name → search for matches
+    # 文件夹名称 -> 搜索匹配项
     matches = _find_matches(raw)
     if len(matches) == 1:
         new_root = set_workspace_root(matches[0])

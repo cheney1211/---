@@ -1,6 +1,6 @@
-"""Persistent storage layer (SQLite + SQLAlchemy).
+"""持久化存储层（SQLite + SQLAlchemy）。
 
-Usage:
+用法：
     from storage import init_db, get_session_scope
     from storage.repositories import SessionRepo, MessageRepo, PendingToolRepo
 """

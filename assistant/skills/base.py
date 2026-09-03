@@ -1,5 +1,5 @@
 """
-Base data structures for the skills system.
+技能系统的基础数据结构。
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from typing import List
 
 @dataclass
 class Skill:
-    """A higher-level capability that groups tools and guidance."""
+    """一种更高级别的能力，用于组合工具和指导信息。"""
 
     name: str
     description: str
