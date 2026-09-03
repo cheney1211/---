@@ -347,12 +347,12 @@ export default function App() {
   );
 
   // ---- confirmation handlers ----
-  const handleConfirmApprove = useCallback(async () => {
+  const handleConfirmApprove = useCallback(async (allowAlways?: boolean) => {
     if (!confirmation) return;
     const id = confirmation.confirmation_id;
     setConfirmation(null);
     try {
-      await resolveConfirmation(id, true);
+      await resolveConfirmation(id, true, allowAlways);
     } catch {
       // backend resolve failed -- the timeout will handle it
     }
@@ -816,14 +816,23 @@ export default function App() {
           )}
         </main>
 
-        <ChatInput
-          onSend={handleSend}
-          disabled={isStreaming}
-          onStop={handleStop}
-          mode={confirmationMode}
-          onModeChange={setConfirmationMode}
-          isEmpty={isEmpty}
-        />
+        {confirmation ? (
+          <ConfirmationDialog
+            data={confirmation}
+            onApprove={handleConfirmApprove}
+            onReject={handleConfirmReject}
+            onExpire={handleConfirmExpire}
+          />
+        ) : (
+          <ChatInput
+            onSend={handleSend}
+            disabled={isStreaming}
+            onStop={handleStop}
+            mode={confirmationMode}
+            onModeChange={setConfirmationMode}
+            isEmpty={isEmpty}
+          />
+        )}
       </div>
 
       {selectMode && (
@@ -846,15 +855,6 @@ export default function App() {
             <span>Delete ({selectedTurnIds.size})</span>
           </button>
         </div>
-      )}
-
-      {confirmation && (
-        <ConfirmationDialog
-          data={confirmation}
-          onApprove={handleConfirmApprove}
-          onReject={handleConfirmReject}
-          onExpire={handleConfirmExpire}
-        />
       )}
     </div>
   );

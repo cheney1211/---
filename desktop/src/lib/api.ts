@@ -342,12 +342,13 @@ export async function updateSessionTitle(sessionId: string, title: string): Prom
 /** 处理确认请求。 */
 export async function resolveConfirmation(
   confirmationId: string,
-  approved: boolean
+  approved: boolean,
+  allowAlways?: boolean
 ): Promise<void> {
   const res = await fetch(`${API_BASE}/confirm/${confirmationId}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ approved }),
+    body: JSON.stringify({ approved, allow_always: allowAlways }),
   });
   if (!res.ok) throw new Error(`Failed to resolve confirmation: ${res.status}`);
 }
