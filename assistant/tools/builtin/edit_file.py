@@ -1,10 +1,10 @@
 """
-Edit file tool -- replace a specific string in a file.
+编辑文件工具 -- 替换文件中的指定文本。
 
-Performs exact string replacement. The old_string must appear exactly
-once in the file for the edit to succeed.
-Only allowed within the workspace directory.
-Requires confirmation before execution.
+执行精确的字符串替换。old_string 必须在文件中
+唯一出现一次，编辑才能成功。
+仅允许在工作区目录内操作。
+执行前需要确认。
 """
 
 from __future__ import annotations
@@ -16,11 +16,10 @@ from pydantic import BaseModel, Field
 
 from ..base import Tool
 from ..registry import register
-from ..workspace import validate_path
 
 
 class EditFileInput(BaseModel):
-    """Input schema for edit_file."""
+    """edit_file 的输入模式。"""
     file_path: str = Field(description="要编辑的文件路径（相对于工作区或绝对路径）")
     old_string: str = Field(description="要被替换的原始文本（必须在文件中唯一匹配）")
     new_string: str = Field(description="替换后的新文本")
@@ -37,10 +36,8 @@ class EditFileTool(Tool):
     requires_confirmation: bool = True
 
     def _run(self, file_path: str, old_string: str, new_string: str) -> str:
-        try:
-            path = validate_path(file_path)
-        except ValueError as e:
-            return f"错误: {e}"
+        # file_path 已由基类中间件（invoke → _validate_path_args）验证并解析。
+        path = Path(file_path)
 
         if not path.exists():
             return f"错误: 文件不存在 '{file_path}'"

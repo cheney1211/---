@@ -1,8 +1,8 @@
 """
-Read file tool -- read file contents with line numbers.
+读取文件工具 -- 读取文件内容并显示行号。
 
-Safe, read-only operation. Files within the workspace are read directly.
-Files outside the workspace require human confirmation.
+安全的只读操作。工作区内的文件直接读取。
+工作区外的文件需要人工确认。
 """
 
 from __future__ import annotations
@@ -14,11 +14,10 @@ from pydantic import BaseModel, Field
 
 from ..base import Tool
 from ..registry import register
-from ..workspace import resolve_path, is_within_workspace, get_workspace_root
 
 
 class ReadFileInput(BaseModel):
-    """Input schema for read_file."""
+    """read_file 的输入模式。"""
     file_path: str = Field(description="要读取的文件的绝对路径或相对于工作区的路径")
     offset: int = Field(default=0, description="起始行号（从0开始），默认为0")
     limit: int = Field(default=2000, description="最多读取的行数，默认为2000")
@@ -33,9 +32,12 @@ class ReadFileTool(Tool):
     )
     args_schema: Type[BaseModel] = ReadFileInput
     requires_confirmation: bool = False
+    _allow_external_paths: bool = True  # 允许在确认后读取工作区外的文件
 
     def check_requires_confirmation(self, **kwargs) -> bool:
-        """Require confirmation when reading files outside the workspace."""
+        """读取工作区外的文件时需要确认。"""
+        from ..workspace import is_within_workspace, resolve_path
+
         file_path = kwargs.get("file_path", "")
         if not file_path:
             return False
@@ -43,18 +45,15 @@ class ReadFileTool(Tool):
         return not is_within_workspace(resolved)
 
     def _run(self, file_path: str, offset: int = 0, limit: int = 2000) -> str:
-        path = resolve_path(file_path)
-        workspace = get_workspace_root()
-
-        if not is_within_workspace(path):
-            pass  # allowed with confirmation; check_requires_confirmation handles it
+        # file_path 已由基类中间件（invoke → _validate_path_args → resolve_path）解析。
+        path = Path(file_path)
 
         if not path.exists():
             return f"错误: 文件不存在 '{file_path}'"
         if not path.is_file():
             return f"错误: 路径不是文件 '{file_path}'"
 
-        # Detect binary files
+        # 检测二进制文件
         try:
             raw = path.read_bytes()[:8192]
             if b"\x00" in raw:
@@ -77,7 +76,7 @@ class ReadFileTool(Tool):
         if not selected:
             return f"文件 '{file_path}' 共 {total} 行，指定范围 [{start}, {end}) 无内容"
 
-        # Format with line numbers (cat -n style, 1-based)
+        # 格式化行号（cat -n 风格，从 1 开始）
         numbered = []
         for i, line in enumerate(selected, start=start + 1):
             numbered.append(f"{i:6d}\t{line.rstrip()}")

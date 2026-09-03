@@ -1,9 +1,9 @@
 """
-Write file tool -- create or overwrite a file.
+写入文件工具 -- 创建或覆盖文件。
 
-Automatically creates parent directories if they don't exist.
-Only allowed within the workspace directory.
-Requires confirmation before execution.
+如果父目录不存在会自动创建。
+仅允许在工作区目录内操作。
+执行前需要确认。
 """
 
 from __future__ import annotations
@@ -15,11 +15,10 @@ from pydantic import BaseModel, Field
 
 from ..base import Tool
 from ..registry import register
-from ..workspace import validate_path
 
 
 class WriteFileInput(BaseModel):
-    """Input schema for write_file."""
+    """write_file 的输入模式。"""
     file_path: str = Field(description="要写入的文件路径（相对于工作区或绝对路径）")
     content: str = Field(description="要写入的文件内容")
 
@@ -35,10 +34,8 @@ class WriteFileTool(Tool):
     requires_confirmation: bool = True
 
     def _run(self, file_path: str, content: str) -> str:
-        try:
-            path = validate_path(file_path)
-        except ValueError as e:
-            return f"错误: {e}"
+        # file_path 已由基类中间件（invoke → _validate_path_args）验证并解析。
+        path = Path(file_path)
 
         try:
             path.parent.mkdir(parents=True, exist_ok=True)

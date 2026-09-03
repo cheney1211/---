@@ -1,12 +1,13 @@
-"""LangGraph-based agent provider with human-in-the-loop confirmation.
+"""基于 LangGraph 的代理提供者，支持人类确认（human-in-the-loop）。
 
-Graph structure:
-    agent -> human_review (interrupt) -> tools -> agent -> ...
-    agent -> tools -> agent -> ...  (no confirmation needed)
-    human_review -> agent  (rejected, skip tools)
+图结构：
+    agent -> human_review（中断）-> path_validator -> tools -> agent -> ...
+    agent -> path_validator -> tools -> agent -> ...  （无需确认）
+    human_review -> agent  （已拒绝，跳过工具执行）
+    path_validator -> agent  （路径校验失败，Agent 自纠错）
 
-The human_review node sits BEFORE tools and calls interrupt() to pause
-the graph. Tool calls are preserved in the state until the user decides.
+path_validator 节点在 tools 之前做路径安全校验（归一化 + 边界检查），
+无论走免审还是审批通道，所有工具调用都必须经过它。
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from langgraph.types import interrupt, Command
 
 from assistant.core import AgentMessage, AgentState
 from assistant.tools.confirmation import ConfirmationManager
+from assistant.tools.workspace import validate_path, resolve_path
 
 logger = logging.getLogger("langgraph_provider")
 
@@ -39,7 +41,7 @@ confirmation_manager = ConfirmationManager()
 
 
 class LangGraphProvider:
-    """Agent provider with LangGraph interrupt-based confirmation."""
+    """基于 LangGraph 中断机制实现人类确认的代理提供者。"""
 
     _instances: List["LangGraphProvider"] = []
 
@@ -66,18 +68,18 @@ class LangGraphProvider:
         self._checkpointer = None
         self._graph = None
         LangGraphProvider._instances.append(self)
-        logger.info("LangGraphProvider initialized with %d tools: %s",
+        logger.info("LangGraphProvider 初始化完成，共 %d 个工具: %s",
                      len(self._tools), [t.name for t in self._tools])
-        logger.info("Tools requiring confirmation: %s",
+        logger.info("需要确认的工具: %s",
                      [t.name for t in self._tools if getattr(t, "requires_confirmation", False)])
 
     # ------------------------------------------------------------------
-    # Graph construction
+    # 图构建
     # ------------------------------------------------------------------
 
     @classmethod
     async def close_all(cls) -> None:
-        """Close all aiosqlite connections. Called during app shutdown."""
+        """关闭所有 aiosqlite 连接。在应用关闭时调用。"""
         for inst in cls._instances:
             if inst._conn is not None:
                 try:
@@ -95,88 +97,151 @@ class LangGraphProvider:
         confirmation_mode = self._confirmation_mode
 
         def agent_node(state: MessagesState) -> dict:
-            logger.info("[agent_node] Invoking LLM with %d messages", len(state["messages"]))
+            logger.info("[agent_node] 使用 %d 条消息调用 LLM", len(state["messages"]))
             response = llm_with_tools.invoke(state["messages"])
-            logger.info("[agent_node] LLM response: tool_calls=%s, content=%s",
+            logger.info("[agent_node] LLM 响应: tool_calls=%s, content=%s",
                         bool(response.tool_calls), (response.content or "")[:100])
             return {"messages": [response]}
 
         def human_review_node(state: MessagesState) -> dict:
             last_msg = state["messages"][-1]
             tool_names = [tc["name"] for tc in last_msg.tool_calls]
-            logger.info("[human_review_node] INTERRUPT for tools: %s", tool_names)
+            logger.info("[human_review_node] 中断，等待确认工具: %s", tool_names)
             user_decision = interrupt({
                 "type": "ask_human_approval",
                 "tool_calls": last_msg.tool_calls,
                 "message": "是否允许执行此工具？",
             })
-            logger.info("[human_review_node] User decision: %s", user_decision)
+            logger.info("[human_review_node] 用户决定: %s", user_decision)
             if isinstance(user_decision, dict):
                 approved = user_decision.get("approved", False)
             else:
                 approved = bool(user_decision)
             if not approved:
-                logger.info("[human_review_node] Rejected, returning ToolMessage")
+                logger.info("[human_review_node] 已拒绝，返回 ToolMessage")
                 return {"messages": [ToolMessage(
                     content="工具调用已被用户拒绝。",
                     tool_call_id=last_msg.tool_calls[0]["id"],
                 )]}
-            logger.info("[human_review_node] Approved, returning empty (tool_calls preserved)")
+            logger.info("[human_review_node] 已批准，返回空结果（保留 tool_calls）")
             return {}
 
         def tools_node(state: MessagesState) -> dict:
             from langgraph.prebuilt import ToolNode
-            logger.info("[tools_node] Executing tools")
+            logger.info("[tools_node] 执行工具")
             result = ToolNode(self._tools).invoke(state)
-            logger.info("[tools_node] Done")
+            logger.info("[tools_node] 执行完成")
             return result
+
+        # ---- Path validator node (Layer 2 defence) ----
+        _PATH_PARAM_KEYWORDS = {"path", "dir", "folder", "root"}
+
+        def path_validator_node(state: MessagesState) -> dict:
+            """Validate and normalise every path argument in pending tool calls.
+
+            For each tool call, scan args for keys containing path-like keywords.
+            - ``_allow_external_paths=False`` (default): reject paths outside workspace.
+            - ``_allow_external_paths=True``: only resolve/normalise, don't reject.
+
+            On failure, returns a ToolMessage error so the agent can self-correct.
+            On success, rewrites args in-place with resolved absolute paths.
+            """
+            last_msg = state["messages"][-1]
+            tool_calls = getattr(last_msg, "tool_calls", [])
+            if not tool_calls:
+                return {"messages": []}
+
+            validated_calls = []
+            for tc in tool_calls:
+                args = tc.get("args", {})
+                tool = self._tool_map.get(tc["name"])
+                allow_external = getattr(tool, "_allow_external_paths", False) if tool else False
+
+                for key, value in list(args.items()):
+                    if not isinstance(value, str) or not value.strip():
+                        continue
+                    if not any(kw in key.lower() for kw in _PATH_PARAM_KEYWORDS):
+                        continue
+                    try:
+                        if allow_external:
+                            args[key] = str(resolve_path(value))
+                        else:
+                            args[key] = str(validate_path(value))
+                    except ValueError as e:
+                        logger.info("[path_validator] 拒绝: tool=%s, arg=%s, error=%s",
+                                    tc["name"], key, e)
+                        return {"messages": [ToolMessage(
+                            content=f"路径校验失败: {e}。请使用工作区内的合法路径。",
+                            tool_call_id=tc["id"],
+                        )]}
+
+                tc["args"] = args
+                validated_calls.append(tc)
+
+            last_msg.tool_calls = validated_calls
+            logger.info("[path_validator] 全部通过，%d 个 tool_calls", len(validated_calls))
+            return {"messages": [last_msg]}
 
         def route_after_agent(state: MessagesState) -> str:
             last_msg = state["messages"][-1]
             if not isinstance(last_msg, AIMessage) or not last_msg.tool_calls:
-                logger.info("[route_after_agent] No tool_calls -> END")
+                logger.info("[route_after_agent] 无 tool_calls -> END")
                 return END
 
             if confirmation_mode == "full_access":
-                logger.info("[route_after_agent] full_access mode -> tools (skip all confirmation)")
-                return "tools"
+                logger.info("[route_after_agent] full_access 模式 -> path_validator")
+                return "path_validator"
 
             if confirmation_mode == "plan":
-                logger.info("[route_after_agent] plan mode -> human_review (confirm all)")
+                logger.info("[route_after_agent] plan 模式 -> human_review（全部确认）")
                 return "human_review"
 
-            # "confirm" mode: check dynamic confirmation per tool
+            # "confirm" 模式：对每个工具动态检查是否需要确认
             for tc in last_msg.tool_calls:
                 tool = tool_map.get(tc["name"])
                 if tool is None:
                     continue
-                # Use dynamic check (supports context-dependent confirmation, e.g. workspace boundaries)
+                # 使用动态检查（支持依赖上下文的确认，例如工作区边界）
                 needs_confirm = tool.check_requires_confirmation(**tc.get("args", {}))
                 if needs_confirm:
-                    logger.info("[route_after_agent] Tool '%s' needs confirmation -> human_review", tc["name"])
+                    logger.info("[route_after_agent] 工具 '%s' 需要确认 -> human_review", tc["name"])
                     return "human_review"
-            logger.info("[route_after_agent] No confirmation needed -> tools")
-            return "tools"
+            logger.info("[route_after_agent] 无需确认 -> path_validator")
+            return "path_validator"
 
         def route_after_review(state: MessagesState) -> str:
             last_msg = state["messages"][-1]
             if isinstance(last_msg, ToolMessage):
-                logger.info("[route_after_review] Rejected (ToolMessage) -> agent")
+                logger.info("[route_after_review] 已拒绝（ToolMessage）-> agent")
                 return "agent"
-            logger.info("[route_after_review] Approved (no ToolMessage) -> tools")
+            logger.info("[route_after_review] 已批准（非 ToolMessage）-> path_validator")
+            return "path_validator"
+
+        def route_after_validator(state: MessagesState) -> str:
+            last_msg = state["messages"][-1]
+            # If the validator injected a ToolMessage error, bounce back to agent
+            if isinstance(last_msg, ToolMessage):
+                logger.info("[route_after_validator] 校验失败 -> agent（自纠错）")
+                return "agent"
+            logger.info("[route_after_validator] 校验通过 -> tools")
             return "tools"
 
         graph = StateGraph(MessagesState)
         graph.add_node("agent", agent_node)
         graph.add_node("human_review", human_review_node)
+        graph.add_node("path_validator", path_validator_node)
         graph.add_node("tools", tools_node)
         graph.set_entry_point("agent")
         graph.add_conditional_edges("agent", route_after_agent, {
             "human_review": "human_review",
-            "tools": "tools",
+            "path_validator": "path_validator",
             END: END,
         })
         graph.add_conditional_edges("human_review", route_after_review, {
+            "agent": "agent",
+            "path_validator": "path_validator",
+        })
+        graph.add_conditional_edges("path_validator", route_after_validator, {
             "agent": "agent",
             "tools": "tools",
         })
@@ -184,7 +249,7 @@ class LangGraphProvider:
         return graph.compile(checkpointer=checkpointer)
 
     # ------------------------------------------------------------------
-    # Message conversion
+    # 消息转换
     # ------------------------------------------------------------------
 
     def _to_lc_messages(self, state: AgentState) -> list[BaseMessage]:
@@ -210,12 +275,12 @@ class LangGraphProvider:
         return lc
 
     # ------------------------------------------------------------------
-    # Core: streaming execution with LangGraph interrupt
+    # 核心：基于 LangGraph 中断的流式执行
     # ------------------------------------------------------------------
 
     async def __call__(self, state: AgentState, *, session_id: str = "default") -> AsyncIterable[AgentMessage]:
-        """Execute the agent graph with interrupt-based confirmation."""
-        # Lazy init checkpointer and graph
+        """基于中断机制执行代理图并进行人类确认。"""
+        # 延迟初始化检查点和图
         if self._checkpointer is None:
             self._conn = await aiosqlite.connect(self._ckpt_path)
             self._checkpointer = AsyncSqliteSaver(self._conn)
@@ -224,10 +289,10 @@ class LangGraphProvider:
         config = {"configurable": {"thread_id": thread_id}}
         lc_messages = self._to_lc_messages(state)
         current_input: Any = {"messages": lc_messages}
-        logger.info("[__call__] Starting with thread_id=%s, %d messages", thread_id, len(lc_messages))
+        logger.info("[__call__] 开始执行，thread_id=%s，共 %d 条消息", thread_id, len(lc_messages))
 
         for _round in range(self._max_tool_rounds):
-            logger.info("[__call__] Round %d", _round + 1)
+            logger.info("[__call__] 第 %d 轮", _round + 1)
             final_messages: list[AIMessage] = []
 
             async for event in self._graph.astream(
@@ -254,22 +319,22 @@ class LangGraphProvider:
                         if not update or not isinstance(update, dict):
                             continue
                         msgs = update.get("messages", [])
-                        logger.info("[__call__] Update from node '%s': %d messages", node_name, len(msgs))
+                        logger.info("[__call__] 节点 '%s' 更新: %d 条消息", node_name, len(msgs))
                         for msg in msgs:
                             if isinstance(msg, AIMessage):
                                 logger.info("[__call__] AIMessage: tool_calls=%s, content=%s",
                                             bool(msg.tool_calls), (msg.content or "")[:80])
                                 final_messages.append(msg)
 
-            # --- Check for interrupt ---
+            # --- 检查中断 ---
             snapshot = await self._graph.aget_state(config)
-            logger.info("[__call__] After stream: snapshot.next=%s, tasks=%d",
+            logger.info("[__call__] 流结束后: snapshot.next=%s, tasks=%d",
                         snapshot.next, len(snapshot.tasks) if snapshot.tasks else 0)
             has_interrupt = False
 
             if snapshot.tasks:
                 for task in snapshot.tasks:
-                    logger.info("[__call__] Task: %s, interrupts=%s",
+                    logger.info("[__call__] 任务: %s, interrupts=%s",
                                 task.name if hasattr(task, 'name') else '?',
                                 len(task.interrupts) if task.interrupts else 0)
                     if not task.interrupts:
@@ -278,7 +343,7 @@ class LangGraphProvider:
                     for intr in task.interrupts:
                         payload = intr.value
                         tool_calls = payload.get("tool_calls", [])
-                        logger.info("[__call__] INTERRUPT DETECTED: %d tool_calls", len(tool_calls))
+                        logger.info("[__call__] 检测到中断: %d 个 tool_calls", len(tool_calls))
 
                         for tc in tool_calls:
                             yield AgentMessage(
@@ -298,7 +363,7 @@ class LangGraphProvider:
                                 tool_name=tc["name"],
                                 tool_args=tc["args"],
                             )
-                            logger.info("[__call__] Yielding confirmation_required for '%s' (id=%s)",
+                            logger.info("[__call__] 发出 confirmation_required 请求: '%s' (id=%s)",
                                         tc["name"], req.confirmation_id)
 
                             yield AgentMessage(
@@ -316,7 +381,7 @@ class LangGraphProvider:
                                 },
                             )
 
-                            logger.info("[__call__] Waiting for user decision...")
+                            logger.info("[__call__] 等待用户决定...")
                             try:
                                 approved = await confirmation_manager.wait_for_decision(
                                     req.confirmation_id, timeout=300.0
@@ -336,28 +401,28 @@ class LangGraphProvider:
                                 )
                                 approved = False
 
-                            logger.info("[__call__] Decision: %s", approved)
+                            logger.info("[__call__] 决定结果: %s", approved)
                             current_input = Command(resume={"approved": approved})
 
             if has_interrupt:
-                logger.info("[__call__] Had interrupt, continuing to next round")
+                logger.info("[__call__] 存在中断，继续下一轮")
                 continue
 
-            # --- No interrupt ---
+            # --- 无中断 ---
             response = final_messages[-1] if final_messages else None
-            logger.info("[__call__] No interrupt. final_messages=%d, response=%s",
+            logger.info("[__call__] 无中断。final_messages=%d, response=%s",
                         len(final_messages), bool(response))
             if response is None:
                 break
 
             if not response.tool_calls:
-                logger.info("[__call__] Final response (no tool_calls): %s", response.content[:100])
+                logger.info("[__call__] 最终响应（无 tool_calls）: %s", response.content[:100])
                 state.append(AgentMessage(role="assistant", content=response.content))
                 yield AgentMessage(role="assistant", content=response.content)
                 return
 
-            logger.info("[__call__] Response has tool_calls but no interrupt, breaking")
+            logger.info("[__call__] 响应包含 tool_calls 但无中断，跳出循环")
             break
 
-        logger.info("[__call__] Exited loop, yielding stop")
+        logger.info("[__call__] 退出循环，发出 stop")
         state.append(AgentMessage(role="assistant", content="", metadata={"stop": True}))
