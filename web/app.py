@@ -85,5 +85,5 @@ if __name__ == "__main__":
         port=8000,
         reload=True,
         reload_includes=["*.py"],
-        reload_excludes=["workSpace/*", "data/*", "frontend/*", ".venv/*", ".next/*", "storage/*.db"],
+        reload_excludes=["workSpace/*", "data/*", ".venv/*", "storage/*.db"],
     )
