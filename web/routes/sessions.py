@@ -34,6 +34,7 @@ class SessionSummary(BaseModel):
     title: str | None
     turns: int
     updated_at: str | None
+    project_id: str | None = None
 
 
 class SyncMessagesRequest(BaseModel):
@@ -64,6 +65,7 @@ async def list_sessions(project_id: str | None = None):
             title=r.title,
             turns=r.turns,
             updated_at=r.updated_at.isoformat() if r.updated_at else None,
+            project_id=r.project_id,
         )
         for r in rows
     ]

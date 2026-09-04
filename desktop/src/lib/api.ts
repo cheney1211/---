@@ -74,6 +74,7 @@ export interface SessionSummary {
   title: string | null;
   turns: number;
   updated_at: string | null;
+  project_id: string | null;
 }
 
 /** 获取会话列表，可按 project_id 进行筛选。 */

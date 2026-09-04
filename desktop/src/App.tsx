@@ -174,6 +174,7 @@ export default function App() {
             title: r.title || r.id.slice(0, 8),  // 如果没有标题，使用session id前8位
             updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : Date.now(),
             messageCount: r.turns * 2,
+            projectId: r.project_id || undefined,  // 映射项目ID
           }))
         );
       })
