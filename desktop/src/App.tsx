@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { X, Trash2, Check, Minus, Square, Copy, Folder, PanelLeft } from "lucide-react";
 import ChatMessage from "@/components/ChatMessage";
 import ChatInput from "@/components/ChatInput";
@@ -7,6 +7,7 @@ import Sidebar, { type SessionMeta } from "@/components/Sidebar";
 import SuggestedPrompts from "@/components/SuggestedPrompts";
 import {
   sendMessageStream,
+  sendMessageStreamWithSession,
   checkHealth,
   getSessionHistory,
   deleteSession as apiDeleteSession,
@@ -21,6 +22,7 @@ import {
   initApiBase,
   API_BASE,
 } from "@/lib/api";
+import { SessionManager } from "@/lib/session-manager";
 
 // ---- helpers ----
 function generateId(): string {
@@ -82,19 +84,24 @@ function saveSessions(sessions: SessionMeta[]) {
 // ---- App ----
 export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null);
   const [sessionId, setSessionId] = useState<string | undefined>();
   const [sessions, setSessions] = useState<SessionMeta[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [expandHovered, setExpandHovered] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const abortRef = useRef<(() => void) | null>(null);
-  const isNewSessionRef = useRef(false);
 
-  // ---- confirmation state ----
+  // SessionManager - 会话级状态管理
+  const sessionManagerRef = useRef<SessionManager>(new SessionManager());
+
+  // 简单的流式状态：只要在等待输出就为 true
+  const [isStreaming, setIsStreaming] = useState(false);
+  // 确认状态
   const [confirmation, setConfirmation] = useState<ConfirmationData | null>(null);
+
+  // 流式渲染优化：使用 rAF 批量更新
+  const pendingUpdateRef = useRef<boolean>(false);
+  const rafIdRef = useRef<number | null>(null);
 
   // ---- select mode ----
   const [selectMode, setSelectMode] = useState(false);
@@ -153,6 +160,29 @@ export default function App() {
     };
   }, []);
 
+  // ---- 发布订阅：监听前台会话变更，精确控制重渲染 ----
+  useEffect(() => {
+    const sessionManager = sessionManagerRef.current;
+
+    const unsubscribe = sessionManager.subscribe((changedSid, changeType) => {
+      const foreground = sessionManager.getForeground();
+
+      // 只有当前台会话发生变更时，才触发 App 重渲染
+      if (foreground && changedSid === foreground.id) {
+        // chunk 和 status 变更频率高，使用 requestAnimationFrame 节流
+        if (changeType === 'chunk' || changeType === 'status') {
+          requestAnimationFrame(() => setRenderTrigger((n) => n + 1));
+        } else {
+          // confirmation/done/error 立即触发
+          setRenderTrigger((n) => n + 1);
+        }
+      }
+      // 后台会话变更只通知 Sidebar（Sidebar 内部自行订阅处理）
+    });
+
+    return unsubscribe;
+  }, []);
+
   useEffect(() => {
     saveSessions(sessions);
   }, [sessions]);
@@ -162,7 +192,7 @@ export default function App() {
       top: scrollRef.current.scrollHeight,
       behavior: "smooth",
     });
-  }, [messages, agentStatus, confirmation]);
+  }, [messages, confirmation, isStreaming]);
 
   // ---- session helpers ----
   const loadSessions = useCallback(() => {
@@ -248,7 +278,13 @@ export default function App() {
         const next = [...prev];
         if (idx >= 0) next[idx] = meta;
         else next.unshift(meta);
-        isNewSessionRef.current = isNew;
+
+        // 标记会话是否是新创建的（用于标题生成）
+        if (isNew) {
+          const session = sessionManagerRef.current.get(sid);
+          if (session) session.isNew = true;
+        }
+
         return next;
       });
     },
@@ -276,40 +312,52 @@ export default function App() {
   const handleSelectSession = useCallback(
     async (sid: string) => {
       if (sid === sessionId) return;
-      if (isStreaming) return;
+
+      const sessionManager = sessionManagerRef.current;
+      sessionManager.switchTo(sid);
+
+      // 先清空消息，避免显示旧会话的内容
+      setMessages([]);
       setSessionId(sid);
       setSelectMode(false);
       setSelectedTurnIds(new Set());
       setEditingMsgId(null);
       setConfirmation(null);
-      try {
-        const history = await getSessionHistory(sid);
-        setMessages(
-          history.messages.map((m, i) => ({
+
+      // 优先使用 buffer，否则从数据库加载
+      const session = sessionManager.get(sid);
+      if (session && session.messageBuffer.length > 0) {
+        setMessages(session.messageBuffer);
+      } else {
+        try {
+          const history = await getSessionHistory(sid);
+          const msgs = history.messages.map((m, i) => ({
             id: `${sid}-${i}`,
             role: m.role as "user" | "assistant",
             content: m.content,
-          }))
-        );
-      } catch {
-        setMessages([]);
+          }));
+          sessionManager.replaceMessages(sid, msgs);
+          setMessages(msgs);
+        } catch {
+          // 保持空消息
+        }
       }
     },
-    [sessionId, isStreaming]
+    [sessionId]
   );
 
   const handleNewSession = useCallback(() => {
-    if (isStreaming) return;
+    // 移除 isStreaming 阻塞！允许在流式输出时创建新会话
     setSessionId(undefined);
     setMessages([]);
     setSelectMode(false);
     setSelectedTurnIds(new Set());
     setEditingMsgId(null);
     setConfirmation(null);
-  }, [isStreaming]);
+  }, []);
 
   const handleNewSessionInProject = useCallback((projectId: string) => {
-    if (isStreaming) return;
+    // 移除 isStreaming 阻塞！
     // 设置当前项目为活跃项目
     setActiveProjectId(projectId);
     // 清空当前会话，开始新对话
@@ -319,12 +367,16 @@ export default function App() {
     setSelectedTurnIds(new Set());
     setEditingMsgId(null);
     setConfirmation(null);
-  }, [isStreaming]);
+  }, []);
 
   const handleDeleteSession = useCallback(
     async (sid: string) => {
+      const sessionManager = sessionManagerRef.current;
+      sessionManager.destroy(sid);  // 中止流 + 清理内存
+
       apiDeleteSession(sid).catch(() => {});
       setSessions((prev) => prev.filter((s) => s.id !== sid));
+
       if (sid === sessionId) {
         setSessionId(undefined);
         setMessages([]);
@@ -376,10 +428,10 @@ export default function App() {
 
   // ---- select mode ----
   const handleEnterSelectMode = useCallback(() => {
-    if (isStreaming) return;
+    // 移除 isStreaming 阻塞
     setSelectMode(true);
     setSelectedTurnIds(new Set());
-  }, [isStreaming]);
+  }, []);
 
   const handleToggleTurn = useCallback((turnId: string) => {
     setSelectedTurnIds((prev) => {
@@ -434,9 +486,9 @@ export default function App() {
 
   // ---- edit mode ----
   const handleEditStart = useCallback((msgId: string) => {
-    if (isStreaming) return;
+    // 移除 isStreaming 阻塞
     setEditingMsgId(msgId);
-  }, [isStreaming]);
+  }, []);
 
   const handleEditCancel = useCallback(() => {
     setEditingMsgId(null);
@@ -444,7 +496,16 @@ export default function App() {
 
   const handleEditSend = useCallback(
     (userMsgId: string, editedText: string) => {
-      if (isStreaming) return;
+      // 移除全局 isStreaming 检查，改为会话级检查
+      const sessionManager = sessionManagerRef.current;
+      const currentSessionId = sessionId || `temp-${generateId()}`;
+      const session = sessionManager.getOrCreate(currentSessionId);
+
+      // 会话级检查：只有当前会话在 streaming 时才阻塞
+      if (session.status === 'streaming' || session.status === 'tool_calling') {
+        return;
+      }
+
       setEditingMsgId(null);
 
       const userIdx = messages.findIndex((m) => m.id === userMsgId);
@@ -470,12 +531,22 @@ export default function App() {
         adjustSessionMessageCount(2);
       }
 
+      // 设置流式状态
       setIsStreaming(true);
-      setAgentStatus({ status: "thinking" });
 
-      const abort = sendMessageStream(editedText, sessionId, {
+      // 如果是新会话，立即设置 sessionId
+      if (!sessionId) {
+        setSessionId(currentSessionId);
+      }
+
+      // 使用新版 sendMessageStreamWithSession
+      const controller = sendMessageStreamWithSession(editedText, session, {
         onSession: (sid) => {
-          setSessionId(sid);
+          // 处理 ID 映射
+          if (currentSessionId !== sid) {
+            sessionManager.renameId(currentSessionId, sid);
+            setSessionId(sid);
+          }
           updateSessionMeta(sid, editedText);
         },
         onStatus: (status) => {
@@ -486,44 +557,46 @@ export default function App() {
               tool_args: status.tool_args,
               description: status.description,
             });
-            setAgentStatus(status);
           } else if (status.status === "confirmation_expired") {
             setConfirmation(null);
-            setAgentStatus(null);
-          } else {
-            setAgentStatus(status);
           }
         },
         onChunk: (token) => {
-          setAgentStatus({ status: "generating" });
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantId ? { ...m, content: m.content + token } : m
-            )
-          );
+          sessionManager.appendChunk(session.id, token);
+
+          // 使用 rAF 批量更新
+          pendingUpdateRef.current = true;
+          if (!rafIdRef.current) {
+            rafIdRef.current = requestAnimationFrame(() => {
+              rafIdRef.current = null;
+              if (pendingUpdateRef.current && session.messageBuffer.length > 0) {
+                if (session.isForeground) {
+                  setMessages([...session.messageBuffer]);
+                }
+                pendingUpdateRef.current = false;
+              }
+            });
+          }
         },
         onDone: (fullContent, doneSessionId) => {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantId ? { ...m, content: fullContent } : m
-            )
-          );
+          sessionManager.markDone(doneSessionId);
           setIsStreaming(false);
           setConfirmation(null);
 
-          // Auto-generate title after first reply
-          if (isNewSessionRef.current) {
-            isNewSessionRef.current = false;
+          // 同步更新 React messages 状态
+          if (session.messageBuffer.length > 0) {
+            setMessages([...session.messageBuffer]);
+          }
 
-            // 1. 先异步存储临时标题到数据库
+          // Auto-generate title after first reply（使用 session.isNew 替代全局 ref）
+          if (session.isNew) {
+            session.isNew = false;
             const tempTitle = editedText.slice(0, 20);
             updateSessionTitle(doneSessionId, tempTitle).catch(() => {});
-
-            // 2. 调用小模型生成正式标题
             generateSessionTitle(doneSessionId, editedText, fullContent)
               .then((res) => {
                 if (res.title) {
-                  // 3. 生成成功后，静默覆盖临时标题
+                  session.title = res.title;
                   setSessions((prev) =>
                     prev.map((s) =>
                       s.id === doneSessionId ? { ...s, title: res.title! } : s
@@ -535,23 +608,17 @@ export default function App() {
           }
         },
         onError: (err) => {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantId
-                ? { ...m, content: `[Error] ${err}` }
-                : m
-            )
-          );
+          sessionManager.markError(session.id, err);
           setIsStreaming(false);
-          setAgentStatus(null);
           setConfirmation(null);
-          isNewSessionRef.current = false;
+          session.isNew = false;
         },
       }, confirmationMode);
 
-      abortRef.current = abort;
+      // 更新 sessionId
+      if (!sessionId) setSessionId(currentSessionId);
     },
-    [isStreaming, sessionId, messages, updateSessionMeta, adjustSessionMessageCount, setConfirmation, confirmationMode]
+    [sessionId, messages, updateSessionMeta, adjustSessionMessageCount, confirmationMode]
   );
 
   // ---- latest user msg ----
@@ -565,7 +632,15 @@ export default function App() {
   // ---- chat ----
   const handleSend = useCallback(
     (text: string) => {
-      if (isStreaming) return;
+      const sessionManager = sessionManagerRef.current;
+      const currentSessionId = sessionId || `temp-${generateId()}`;
+      const session = sessionManager.getOrCreate(currentSessionId);
+
+      // 会话级检查：只有当前会话在 streaming 时才阻塞
+      if (session.status === 'streaming' || session.status === 'tool_calling') {
+        return;
+      }
+
       if (selectMode) {
         setSelectMode(false);
         setSelectedTurnIds(new Set());
@@ -574,20 +649,36 @@ export default function App() {
       const userId = generateId();
       const assistantId = generateId();
 
-      setMessages((prev) => [
-        ...prev,
-        { id: userId, role: "user", content: text },
-        { id: assistantId, role: "assistant", content: "" },
-      ]);
-      setIsStreaming(true);
-      setAgentStatus({ status: "thinking" });
+      // 创建消息并添加到会话 buffer
+      const userMsg = { id: userId, role: "user" as const, content: text };
+      const assistantMsg = { id: assistantId, role: "assistant" as const, content: "" };
 
-      const abort = sendMessageStream(text, sessionId, {
+      sessionManager.addMessage(currentSessionId, userMsg);
+      sessionManager.addMessage(currentSessionId, assistantMsg);
+
+      // 设置流式状态
+      setIsStreaming(true);
+
+      // 如果是新会话，立即设置 sessionId
+      if (!sessionId) {
+        setSessionId(currentSessionId);
+      }
+
+      // 更新 React 状态
+      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+
+      // 使用新版 sendMessageStreamWithSession
+      const controller = sendMessageStreamWithSession(text, session, {
         onSession: (sid) => {
-          setSessionId(sid);
+          // 处理 ID 映射：临时ID -> 服务端真实ID
+          if (currentSessionId !== sid) {
+            sessionManager.renameId(currentSessionId, sid);
+            setSessionId(sid);
+          }
           updateSessionMeta(sid, text);
         },
         onStatus: (status) => {
+          // 处理确认状态
           if (status.status === "confirmation_required") {
             setConfirmation({
               confirmation_id: status.confirmation_id,
@@ -595,79 +686,82 @@ export default function App() {
               tool_args: status.tool_args,
               description: status.description,
             });
-            setAgentStatus(status);
           } else if (status.status === "confirmation_expired") {
             setConfirmation(null);
-            setAgentStatus(null);
-          } else {
-            setAgentStatus(status);
           }
         },
         onChunk: (token) => {
-          setAgentStatus({ status: "generating" });
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantId ? { ...m, content: m.content + token } : m
-            )
-          );
+          // 追加 chunk 到会话 buffer
+          sessionManager.appendChunk(session.id, token);
+
+          // 使用 rAF 批量更新，避免频繁重渲染
+          pendingUpdateRef.current = true;
+          if (!rafIdRef.current) {
+            rafIdRef.current = requestAnimationFrame(() => {
+              rafIdRef.current = null;
+              if (pendingUpdateRef.current && session.messageBuffer.length > 0) {
+                // 只有当前会话才更新 React 状态
+                if (session.isForeground) {
+                  setMessages([...session.messageBuffer]);
+                }
+                pendingUpdateRef.current = false;
+              }
+            });
+          }
         },
         onDone: (fullContent, doneSessionId) => {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantId ? { ...m, content: fullContent } : m
-            )
-          );
+          sessionManager.markDone(doneSessionId);
           setIsStreaming(false);
           setConfirmation(null);
 
-          // Auto-generate title after first reply
-          if (isNewSessionRef.current) {
-            isNewSessionRef.current = false;
+          // 同步更新 React messages 状态
+          if (session.messageBuffer.length > 0) {
+            setMessages([...session.messageBuffer]);
+          }
+
+          // Auto-generate title after first reply（使用 session.isNew 替代全局 ref）
+          if (session.isNew) {
+            session.isNew = false;
 
             // 1. 先异步存储临时标题到数据库
             const tempTitle = text.slice(0, 20);
             updateSessionTitle(doneSessionId, tempTitle).catch(() => {});
 
-            // 2. 调用小模型生成正式标题（使用 TITLE_PROVIDER/TITLE_MODEL 环境变量配置）
+            // 2. 调用小模型生成正式标题
             generateSessionTitle(doneSessionId, text, fullContent)
               .then((res) => {
                 if (res.title) {
-                  // 3. 生成成功后，静默覆盖临时标题（前端状态 + 数据库）
+                  session.title = res.title;
                   setSessions((prev) =>
                     prev.map((s) =>
                       s.id === doneSessionId ? { ...s, title: res.title! } : s
                     )
                   );
-                  // 数据库已在 generateSessionTitle API 中更新
                 }
               })
               .catch(() => {});
           }
         },
         onError: (err) => {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantId
-                ? { ...m, content: `[Error] ${err}` }
-                : m
-            )
-          );
+          sessionManager.markError(currentSessionId, err);
           setIsStreaming(false);
-          setAgentStatus(null);
           setConfirmation(null);
-            isNewSessionRef.current = false;
+          session.isNew = false;
         },
       }, confirmationMode, activeProjectId);
 
-      abortRef.current = abort;
+      // 更新 sessionId
+      if (!sessionId) setSessionId(currentSessionId);
     },
-    [isStreaming, sessionId, updateSessionMeta, selectMode, confirmationMode, activeProjectId]
+    [sessionId, updateSessionMeta, selectMode, confirmationMode, activeProjectId]
   );
 
   const handleStop = () => {
-    abortRef.current?.();
+    const sessionManager = sessionManagerRef.current;
+    if (sessionId) {
+      sessionManager.abort(sessionId);
+    }
     setIsStreaming(false);
-    setAgentStatus(null);
     setConfirmation(null);
 
     setMessages((prev) => {
@@ -679,12 +773,15 @@ export default function App() {
     });
   };
 
+  // ---- 当前是否在流式输出 ----
+  const isCurrentStreaming = isStreaming;
+
   // ---- render helpers ----
   const turns = groupIntoTurns(messages);
   const isEmpty = messages.length === 0;
 
   const renderMessage = (msg: Message, _index: number, isLastInList: boolean) => {
-    const showStatus = isStreaming && msg.role === "assistant" && isLastInList;
+    const showStatus = isCurrentStreaming && msg.role === "assistant" && isLastInList;
     const isLatestUser = msg.id === latestUserMsgId;
     return (
       <ChatMessage
@@ -692,9 +789,8 @@ export default function App() {
         role={msg.role}
         content={msg.content}
         isStreaming={showStatus}
-        status={showStatus ? agentStatus : null}
         onDelete={handleEnterSelectMode}
-        editable={msg.role === "user" && isLatestUser && !isStreaming}
+        editable={msg.role === "user" && isLatestUser && !isCurrentStreaming}
         isEditing={editingMsgId === msg.id}
         onEditStart={() => handleEditStart(msg.id)}
         onEditCancel={handleEditCancel}
@@ -715,6 +811,7 @@ export default function App() {
           sessions={sessions}
           activeSessionId={sessionId}
           sidebarOpen={sidebarOpen}
+          sessionManager={sessionManagerRef.current}
           onToggleSidebar={() => setSidebarOpen((v) => !v)}
           onOpenFolder={handleOpenFolder}
           onSelect={handleSelectSession}
@@ -827,7 +924,7 @@ export default function App() {
         ) : (
           <ChatInput
             onSend={handleSend}
-            disabled={isStreaming}
+            disabled={isCurrentStreaming}
             onStop={handleStop}
             mode={confirmationMode}
             onModeChange={setConfirmationMode}

@@ -1,15 +1,12 @@
 
-import { User, Copy, Check, Pencil, Trash2, X, Send } from "lucide-react";
+import { User, Copy, Check, Pencil, Trash2, X, Send, Loader2 } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 import MarkdownRenderer from "./MarkdownRenderer";
-import StatusIndicator from "./StatusIndicator";
-import type { AgentStatus } from "@/lib/api";
 
 interface Props {
   role: "user" | "assistant";
   content: string;
   isStreaming?: boolean;
-  status?: AgentStatus | null;
   onDelete?: () => void;
   editable?: boolean;
   isEditing?: boolean;
@@ -23,7 +20,6 @@ export default function ChatMessage({
   role,
   content,
   isStreaming,
-  status,
   onDelete,
   editable,
   isEditing,
@@ -105,11 +101,6 @@ export default function ChatMessage({
       </div>
 
       <div className="chat-bubble-wrap">
-        <StatusIndicator
-          status={status ?? null}
-          visible={!!isStreaming}
-        />
-
         {isEditing ? (
           <div className={`chat-edit-area${isUser ? " user" : ""}`}>
             <textarea
@@ -125,7 +116,7 @@ export default function ChatMessage({
                 <X size={14} />
                 <span>Cancel</span>
               </button>
-              <button className="chat-edit-send" onClick={handleSendEdit} title="Send">
+              <button className="chat-edit-send" onClick={handleEditSend} title="Send">
                 <Send size={14} />
                 <span>Send</span>
               </button>
@@ -133,13 +124,23 @@ export default function ChatMessage({
           </div>
         ) : (
           <>
-            <div className={`chat-bubble ${isUser ? "user" : "assistant"}${!isUser && isStreaming && !content ? " chat-streaming-empty" : ""}`}>
-              {isUser ? (
-                <span className="whitespace-pre-wrap">{content}</span>
-              ) : content ? (
-                <MarkdownRenderer content={content} />
-              ) : null}
-            </div>
+            {/* 流式输出中且无内容：显示转圈 */}
+            {isStreaming && !content && (
+              <div className="status-indicator">
+                <Loader2 size={14} className="animate-spin" />
+              </div>
+            )}
+
+            {/* 有内容时显示气泡 */}
+            {content && (
+              <div className={`chat-bubble ${isUser ? "user" : "assistant"}`}>
+                {isUser ? (
+                  <span className="whitespace-pre-wrap">{content}</span>
+                ) : (
+                  <MarkdownRenderer content={content} />
+                )}
+              </div>
+            )}
 
             {!selectMode && content && !isStreaming && (
               <div className="chat-bubble-actions">

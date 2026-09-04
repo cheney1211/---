@@ -1,6 +1,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { MessageSquarePlus, MoreHorizontal, Pencil, Trash2, FolderOpen, Folder, ChevronRight, ChevronDown, PanelLeftClose } from "lucide-react";
+import { MessageSquarePlus, MoreHorizontal, Pencil, Trash2, FolderOpen, Folder, ChevronRight, ChevronDown, PanelLeftClose, Loader2 } from "lucide-react";
+import type { SessionManager } from "@/lib/session-manager";
 
 export interface SessionMeta {
   id: string;
@@ -23,6 +24,7 @@ interface SessionItemProps {
   openMenuId: string | null;
   sidebarWidth: number;
   menuRef: React.RefObject<HTMLDivElement | null>;
+  sessionManager: SessionManager;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
   onRenameStart: (id: string, title: string) => void;
@@ -41,6 +43,7 @@ function SessionItem({
   openMenuId,
   sidebarWidth,
   menuRef,
+  sessionManager,
   onSelect,
   onDelete,
   onRenameStart,
@@ -54,6 +57,23 @@ function SessionItem({
   const spanRef = useRef<HTMLSpanElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const [isOverflowing, setIsOverflowing] = useState(false);
+  const [streamingStatus, setStreamingStatus] = useState<string | null>(null);
+
+  // 独立订阅：监听此会话的状态变更
+  useEffect(() => {
+    const unsubscribe = sessionManager.subscribe((changedSid, changeType) => {
+      if (changedSid === session.id && (changeType === 'status' || changeType === 'done' || changeType === 'error')) {
+        const s = sessionManager.get(session.id);
+        setStreamingStatus(s?.status || null);
+      }
+    });
+
+    // 初始化状态
+    const s = sessionManager.get(session.id);
+    setStreamingStatus(s?.status || null);
+
+    return unsubscribe;  // 组件卸载时取消订阅
+  }, [session.id, sessionManager]);
 
   // 检测文字是否溢出
   const checkOverflow = () => {
@@ -81,13 +101,19 @@ function SessionItem({
     }
   }, [isRenaming]);
 
+  // 判断是否在流式输出中
+  const isStreaming = streamingStatus === 'streaming' || streamingStatus === 'tool_calling' || streamingStatus === 'waiting_confirm';
+
   return (
     <div
-      className={`sidebar-session ${isActive ? "active" : ""}`}
+      className={`sidebar-session ${isActive ? "active" : ""} ${isStreaming ? "streaming" : ""}`}
       onClick={() => onSelect(session.id)}
     >
         <div className="sidebar-session-content">
           <div ref={titleRef} className={`sidebar-session-title${isOverflowing ? ' overflow' : ''}`}>
+            {isStreaming && (
+              <Loader2 size={12} className="sidebar-streaming-indicator spinning" />
+            )}
             {isRenaming ? (
               <input
                 ref={renameInputRef}
@@ -108,6 +134,9 @@ function SessionItem({
         {showMeta && (
           <div className="sidebar-session-meta">
             <span className="sidebar-session-count">{session.messageCount} 条消息</span>
+            {streamingStatus === 'waiting_confirm' && (
+              <span className="sidebar-session-confirm-badge">需要确认</span>
+            )}
           </div>
         )}
       </div>
@@ -157,6 +186,7 @@ interface Props {
   sessions: SessionMeta[];
   activeSessionId: string | undefined;
   sidebarOpen: boolean;
+  sessionManager: SessionManager;
   onToggleSidebar: () => void;
   onOpenFolder: () => void;
   onSelect: (id: string) => void;
@@ -172,6 +202,7 @@ export default function Sidebar({
   sessions,
   activeSessionId,
   sidebarOpen,
+  sessionManager,
   onToggleSidebar,
   onOpenFolder,
   onSelect,
@@ -364,6 +395,7 @@ export default function Sidebar({
                         openMenuId={openMenuId}
                         sidebarWidth={sidebarWidth}
                         menuRef={menuRef}
+                        sessionManager={sessionManager}
                         onSelect={onSelect}
                         onDelete={onDelete}
                         onRenameStart={(id, title) => {
@@ -405,6 +437,7 @@ export default function Sidebar({
               openMenuId={openMenuId}
               sidebarWidth={sidebarWidth}
               menuRef={menuRef}
+              sessionManager={sessionManager}
               onSelect={onSelect}
               onDelete={onDelete}
               onRenameStart={(id, title) => {

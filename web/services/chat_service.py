@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import uuid
 from pathlib import Path
-from typing import AsyncIterable
+from typing import AsyncIterable, Dict, Optional
 
 from assistant.core import AgentMessage, AgentState
 from assistant.tools import get_tools, register as register_tool
@@ -15,6 +17,36 @@ from storage.memory import read_memory, read_global_memory, init_memory
 from assistant.tools.workspace import get_workspace_root, get_platform_hint, project_context
 from web.llm import get_adapter, get_provider, get_default_provider_name, get_default_system_message
 from web.utils.message_utils import classify_and_extract
+
+logger = logging.getLogger("chat_service")
+
+# 最大并发推理任务数（初期设为 3，稳定后可调到 5）
+MAX_CONCURRENT_SESSIONS = 3
+_session_semaphore = asyncio.Semaphore(MAX_CONCURRENT_SESSIONS)
+
+# 活跃任务跟踪（用于取消）
+_active_tasks: Dict[str, asyncio.Task] = {}
+
+
+def cancel_session_task(session_id: str) -> bool:
+    """取消指定会话的活跃任务。返回是否成功取消。"""
+    task = _active_tasks.get(session_id)
+    if task and not task.done():
+        task.cancel()
+        logger.info("已取消会话任务: %s", session_id)
+        return True
+    return False
+
+
+def get_active_session_count() -> int:
+    """获取当前活跃会话数。"""
+    return len(_active_tasks)
+
+
+def is_session_active(session_id: str) -> bool:
+    """检查指定会话是否正在执行。"""
+    task = _active_tasks.get(session_id)
+    return task is not None and not task.done()
 
 
 async def _resolve_project_root(project_id: str | None) -> str | None:
@@ -183,31 +215,50 @@ async def process_message_stream(
     state.append(user_msg)
 
     root_path = await _resolve_project_root(project_id)
-    with project_context(project_id, root_path=root_path):
-        llm_provider = resolve_provider(
-            project_id=project_id, root_path=root_path,
-            provider=provider, model=model, mode=mode,
-        )
 
-        yield {"event": "session", "data": {"session_id": session_id}}
+    # 获取信号量（限制并发推理数）
+    async with _session_semaphore:
+        with project_context(project_id, root_path=root_path):
+            llm_provider = resolve_provider(
+                project_id=project_id, root_path=root_path,
+                provider=provider, model=model, mode=mode,
+            )
 
-        full_text = ""
-        async for msg in llm_provider(state, session_id=session_id):
-            status_data = msg.metadata.get("status")
-            if status_data:
-                yield {"event": "status", "data": status_data}
-                continue
+            yield {"event": "session", "data": {"session_id": session_id}}
 
-            if msg.metadata.get("chunk"):
-                full_text += msg.content
-                yield {"event": "chunk", "data": {"content": msg.content}}
-                continue
+            full_text = ""
 
-            kind, is_chunk = classify_and_extract(msg)
-            await persist_message(session_id, msg, kind=kind)
-            state.append(msg)
-            if msg.role == "assistant":
-                full_text = msg.content
+            # 创建可取消的任务
+            task = asyncio.current_task()
+            if task:
+                _active_tasks[session_id] = task
+
+            try:
+                async for msg in llm_provider(state, session_id=session_id):
+                    status_data = msg.metadata.get("status")
+                    if status_data:
+                        yield {"event": "status", "data": status_data}
+                        continue
+
+                    if msg.metadata.get("chunk"):
+                        full_text += msg.content
+                        yield {"event": "chunk", "data": {"content": msg.content}}
+                        continue
+
+                    kind, is_chunk = classify_and_extract(msg)
+                    await persist_message(session_id, msg, kind=kind)
+                    state.append(msg)
+                    if msg.role == "assistant":
+                        full_text = msg.content
+
+            except asyncio.CancelledError:
+                # 任务被取消，记录日志
+                logger.info("任务被取消: %s", session_id)
+                raise
+
+            finally:
+                # 无论正常结束还是异常，都清理任务记录
+                _active_tasks.pop(session_id, None)
 
     state.turns += 1
     await SessionRepo.set_turns(session_id, state.turns)

@@ -284,6 +284,143 @@ export function sendMessageStream(
   return () => controller.abort();
 }
 
+// ---- 新版 sendMessageStream（集成 SessionManager）----
+
+import type { SessionInstance } from './session-manager';
+
+/** 发送消息并获取流式响应（集成 SessionManager 版本）。返回 AbortController。 */
+export function sendMessageStreamWithSession(
+  message: string,
+  sessionInstance: SessionInstance,
+  callbacks: {
+    onSession: (sessionId: string) => void;
+    onStatus: (status: AgentStatus) => void;
+    onChunk: (content: string) => void;
+    onDone: (fullContent: string, sessionId: string) => void;
+    onError: (error: string) => void;
+  },
+  mode: string = 'confirm',
+  projectId?: string
+): AbortController {
+  const controller = new AbortController();
+  sessionInstance.abortController = controller;
+  sessionInstance.status = 'streaming';
+
+  // 内部异步函数，捕获所有异常
+  (async () => {
+    let fullContent = '';
+    try {
+      const res = await fetch(`${API_BASE}/chat/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message,
+          session_id: sessionInstance.id.startsWith('temp-') ? undefined : sessionInstance.id,
+          project_id: projectId,
+          mode,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!res.ok || !res.body) {
+        throw new Error(`Request failed: ${res.status}`);
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let currentEvent = '';
+      let sessionIdMapped = false;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('event:')) {
+            currentEvent = line.slice(6).trim();
+          } else if (line.startsWith('data:')) {
+            const data = line.slice(5).trim();
+            if (!data) continue;
+
+            try {
+              const parsed = JSON.parse(data);
+
+              // session 事件：处理 ID 映射（必须先于 chunk 处理）
+              if (currentEvent === 'session') {
+                const serverSessionId = parsed.session_id;
+                const tempId = sessionInstance.id;
+
+                // 如果是新会话，执行 ID 映射
+                if (tempId.startsWith('temp-') && serverSessionId !== tempId) {
+                  callbacks.onSession(serverSessionId);
+                } else {
+                  callbacks.onSession(serverSessionId);
+                }
+                sessionIdMapped = true;
+                continue;
+              }
+
+              // 确保 session ID 已映射后再处理后续事件
+              if (!sessionIdMapped) {
+                console.warn('[API] Received event before session ID mapped:', currentEvent);
+              }
+
+              if (currentEvent === 'status') {
+                // 调用 onStatus 回调
+                callbacks.onStatus(parsed as AgentStatus);
+                await new Promise((r) => setTimeout(r, 0));
+              } else if (currentEvent === 'chunk') {
+                fullContent += parsed.content;
+                // 调用 onChunk 回调
+                callbacks.onChunk(parsed.content);
+              } else if (currentEvent === 'done') {
+                callbacks.onDone(parsed.content, parsed.session_id);
+                return;
+              } else if (currentEvent === 'error') {
+                throw new Error(parsed.error || 'Unknown error');
+              }
+            } catch (parseErr) {
+              // 如果是我们抛出的错误，直接抛出
+              if (parseErr instanceof Error && parseErr.message.startsWith('Request failed')) {
+                throw parseErr;
+              }
+              if (parseErr instanceof Error && parseErr.message !== 'Unknown error') {
+                console.warn('[API] Failed to parse SSE data:', parseErr);
+              } else if (parseErr instanceof Error) {
+                throw parseErr;
+              }
+            }
+          }
+        }
+      }
+
+      // 流正常结束但没有 done 事件
+      if (fullContent) {
+        callbacks.onDone(fullContent, sessionInstance.id);
+      }
+    } catch (err: unknown) {
+      // AbortError 是用户主动取消，不触发 onError
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        return;
+      }
+      console.error('[API] Stream error:', err);
+      callbacks.onError(String(err));
+    } finally {
+      // 清理 abortController 引用
+      if (sessionInstance.abortController === controller) {
+        sessionInstance.abortController = null;
+      }
+    }
+  })();
+
+  return controller;
+}
+
 // ---- 会话管理 ----
 
 /** 获取会话历史记录。 */

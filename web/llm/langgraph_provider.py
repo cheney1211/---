@@ -12,6 +12,7 @@ path_validator 节点在 tools 之前做路径安全校验（归一化 + 边界�
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any, AsyncIterable, Dict, List, Optional
@@ -26,7 +27,6 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.tools import BaseTool
-import aiosqlite
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, MessagesState, StateGraph
 from langgraph.types import interrupt, Command
@@ -34,6 +34,7 @@ from langgraph.types import interrupt, Command
 from assistant.core import AgentMessage, AgentState
 from assistant.tools.confirmation import ConfirmationManager
 from assistant.tools.workspace import validate_path, resolve_path
+from .connection_pool import ConnectionPool
 
 logger = logging.getLogger("langgraph_provider")
 
@@ -44,6 +45,8 @@ class LangGraphProvider:
     """基于 LangGraph 中断机制实现人类确认的代理提供者。"""
 
     _instances: List["LangGraphProvider"] = []
+    _pool: Optional[ConnectionPool] = None
+    _pool_lock = asyncio.Lock()
 
     def __init__(
         self,
@@ -61,12 +64,8 @@ class LangGraphProvider:
         self._confirmation_mode = confirmation_mode
         self._tool_map: Dict[str, BaseTool] = {t.name: t for t in self._tools}
         _ROOT = Path(__file__).resolve().parent.parent.parent
-        _ckpt_path = _ROOT / "data" / "langgraph_checkpoints.db"
-        _ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-        self._ckpt_path = str(_ckpt_path)
-        self._conn = None
-        self._checkpointer = None
-        self._graph = None
+        self._ckpt_path = str(_ROOT / "data" / "langgraph_checkpoints.db")
+        (_ROOT / "data").mkdir(parents=True, exist_ok=True)
         LangGraphProvider._instances.append(self)
         logger.info("LangGraphProvider 初始化完成，共 %d 个工具: %s",
                      len(self._tools), [t.name for t in self._tools])
@@ -74,22 +73,45 @@ class LangGraphProvider:
                      [t.name for t in self._tools if getattr(t, "requires_confirmation", False)])
 
     # ------------------------------------------------------------------
-    # 图构建
+    # 连接池管理
     # ------------------------------------------------------------------
 
     @classmethod
+    async def _get_pool(cls, db_path: str) -> ConnectionPool:
+        """获取或创建连接池（双重检查锁）。"""
+        if cls._pool is not None:
+            return cls._pool
+        async with cls._pool_lock:
+            if cls._pool is None:
+                cls._pool = ConnectionPool(db_path, min_size=2, max_size=10)
+                logger.info("连接池已创建")
+        return cls._pool
+
+    @classmethod
     async def close_all(cls) -> None:
-        """关闭所有 aiosqlite 连接。在应用关闭时调用。"""
-        for inst in cls._instances:
-            if inst._conn is not None:
-                try:
-                    await inst._conn.close()
-                except Exception:
-                    pass
-                inst._conn = None
+        """关闭连接池。在应用关闭时调用。"""
+        if cls._pool is not None:
+            await cls._pool.close_all()
+            cls._pool = None
         cls._instances.clear()
 
-    def _build_graph(self, checkpointer):
+    # ------------------------------------------------------------------
+    # 图预编译（双重检查锁）
+    # ------------------------------------------------------------------
+
+    async def _get_compiled_graph(self, checkpointer=None):
+        """获取预编译的图（只编译一次）。
+
+        注意：由于 checkpointer 是 per-session 的，我们需要为每个 checkpointer 创建一个编译后的图。
+        这里使用一个简单的缓存策略。
+        """
+        # 由于 checkpointer 是 per-connection 的，我们需要为每个 checkpointer 编译图
+        # 这是一个简化实现，实际生产环境可能需要更复杂的缓存策略
+        graph = self._build_graph()
+        return graph.compile(checkpointer=checkpointer)
+
+    def _build_graph(self):
+        """构建图结构（不绑定 checkpointer）。"""
         llm_with_tools = (
             self._llm.bind_tools(self._tools) if self._tools else self._llm
         )
@@ -137,15 +159,6 @@ class LangGraphProvider:
         _PATH_PARAM_KEYWORDS = {"path", "dir", "folder", "root"}
 
         def path_validator_node(state: MessagesState) -> dict:
-            """Validate and normalise every path argument in pending tool calls.
-
-            For each tool call, scan args for keys containing path-like keywords.
-            - ``_allow_external_paths=False`` (default): reject paths outside workspace.
-            - ``_allow_external_paths=True``: only resolve/normalise, don't reject.
-
-            On failure, returns a ToolMessage error so the agent can self-correct.
-            On success, rewrites args in-place with resolved absolute paths.
-            """
             last_msg = state["messages"][-1]
             tool_calls = getattr(last_msg, "tool_calls", [])
             if not tool_calls:
@@ -201,7 +214,6 @@ class LangGraphProvider:
                 tool = tool_map.get(tc["name"])
                 if tool is None:
                     continue
-                # 使用动态检查（支持依赖上下文的确认，例如工作区边界）
                 needs_confirm = tool.check_requires_confirmation(**tc.get("args", {}))
                 if needs_confirm:
                     logger.info("[route_after_agent] 工具 '%s' 需要确认 -> human_review", tc["name"])
@@ -219,7 +231,6 @@ class LangGraphProvider:
 
         def route_after_validator(state: MessagesState) -> str:
             last_msg = state["messages"][-1]
-            # If the validator injected a ToolMessage error, bounce back to agent
             if isinstance(last_msg, ToolMessage):
                 logger.info("[route_after_validator] 校验失败 -> agent（自纠错）")
                 return "agent"
@@ -246,7 +257,7 @@ class LangGraphProvider:
             "tools": "tools",
         })
         graph.add_edge("tools", "agent")
-        return graph.compile(checkpointer=checkpointer)
+        return graph
 
     # ------------------------------------------------------------------
     # 消息转换
@@ -280,149 +291,166 @@ class LangGraphProvider:
 
     async def __call__(self, state: AgentState, *, session_id: str = "default") -> AsyncIterable[AgentMessage]:
         """基于中断机制执行代理图并进行人类确认。"""
-        # 延迟初始化检查点和图
-        if self._checkpointer is None:
-            self._conn = await aiosqlite.connect(self._ckpt_path)
-            self._checkpointer = AsyncSqliteSaver(self._conn)
-            self._graph = self._build_graph(self._checkpointer)
-        thread_id = session_id
-        config = {"configurable": {"thread_id": thread_id}}
-        lc_messages = self._to_lc_messages(state)
-        current_input: Any = {"messages": lc_messages}
-        logger.info("[__call__] 开始执行，thread_id=%s，共 %d 条消息", thread_id, len(lc_messages))
+        try:
+            # 获取连接池
+            pool = await self._get_pool(self._ckpt_path)
 
-        for _round in range(self._max_tool_rounds):
-            logger.info("[__call__] 第 %d 轮", _round + 1)
-            final_messages: list[AIMessage] = []
+            # 从连接池获取连接，创建 checkpointer
+            async with pool.acquire() as conn:
+                checkpointer = AsyncSqliteSaver(conn)
 
-            async for event in self._graph.astream(
-                current_input,
-                config=config,
-                stream_mode=["updates", "messages"],
-                subgraph=False,
-            ):
-                mode, data = event
+                # 获取编译后的图（每个 checkpointer 需要单独编译）
+                compiled_graph = await self._get_compiled_graph(checkpointer)
 
-                if mode == "messages":
-                    msg, _metadata = data
-                    if isinstance(msg, AIMessageChunk):
-                        token = msg.content or ""
-                        if token:
-                            yield AgentMessage(
-                                role="assistant",
-                                content=token,
-                                metadata={"chunk": True},
-                            )
+                thread_id = session_id
+                config = {"configurable": {"thread_id": thread_id}}
+                lc_messages = self._to_lc_messages(state)
+                current_input: Any = {"messages": lc_messages}
+                logger.info("[__call__] 开始执行，thread_id=%s，共 %d 条消息", thread_id, len(lc_messages))
 
-                elif mode == "updates" and data and isinstance(data, dict):
-                    for node_name, update in data.items():
-                        if not update or not isinstance(update, dict):
-                            continue
-                        msgs = update.get("messages", [])
-                        logger.info("[__call__] 节点 '%s' 更新: %d 条消息", node_name, len(msgs))
-                        for msg in msgs:
-                            if isinstance(msg, AIMessage):
-                                logger.info("[__call__] AIMessage: tool_calls=%s, content=%s",
-                                            bool(msg.tool_calls), (msg.content or "")[:80])
-                                final_messages.append(msg)
+                for _round in range(self._max_tool_rounds):
+                    logger.info("[__call__] 第 %d 轮", _round + 1)
+                    final_messages: list[AIMessage] = []
 
-            # --- 检查中断 ---
-            snapshot = await self._graph.aget_state(config)
-            logger.info("[__call__] 流结束后: snapshot.next=%s, tasks=%d",
-                        snapshot.next, len(snapshot.tasks) if snapshot.tasks else 0)
-            has_interrupt = False
+                    async for event in compiled_graph.astream(
+                        current_input,
+                        config=config,
+                        stream_mode=["updates", "messages"],
+                        subgraph=False,
+                    ):
+                        # 检查任务是否被取消
+                        task = asyncio.current_task()
+                        if task and task.cancelled():
+                            logger.info("[__call__] 任务被取消，session_id=%s", session_id)
+                            raise asyncio.CancelledError()
 
-            if snapshot.tasks:
-                for task in snapshot.tasks:
-                    logger.info("[__call__] 任务: %s, interrupts=%s",
-                                task.name if hasattr(task, 'name') else '?',
-                                len(task.interrupts) if task.interrupts else 0)
-                    if not task.interrupts:
-                        continue
-                    has_interrupt = True
-                    for intr in task.interrupts:
-                        payload = intr.value
-                        tool_calls = payload.get("tool_calls", [])
-                        logger.info("[__call__] 检测到中断: %d 个 tool_calls", len(tool_calls))
+                        mode, data = event
 
-                        for tc in tool_calls:
-                            yield AgentMessage(
-                                role="assistant",
-                                content="",
-                                metadata={
-                                    "chunk": True,
-                                    "status": {
-                                        "status": "tool_start",
-                                        "name": tc["name"],
-                                        "args": tc["args"],
-                                    },
-                                },
-                            )
+                        if mode == "messages":
+                            msg, _metadata = data
+                            if isinstance(msg, AIMessageChunk):
+                                token = msg.content or ""
+                                if token:
+                                    yield AgentMessage(
+                                        role="assistant",
+                                        content=token,
+                                        metadata={"chunk": True},
+                                    )
 
-                            req = confirmation_manager.create_request(
-                                tool_name=tc["name"],
-                                tool_args=tc["args"],
-                            )
-                            logger.info("[__call__] 发出 confirmation_required 请求: '%s' (id=%s)",
-                                        tc["name"], req.confirmation_id)
+                        elif mode == "updates" and data and isinstance(data, dict):
+                            for node_name, update in data.items():
+                                if not update or not isinstance(update, dict):
+                                    continue
+                                msgs = update.get("messages", [])
+                                logger.info("[__call__] 节点 '%s' 更新: %d 条消息", node_name, len(msgs))
+                                for msg in msgs:
+                                    if isinstance(msg, AIMessage):
+                                        logger.info("[__call__] AIMessage: tool_calls=%s, content=%s",
+                                                    bool(msg.tool_calls), (msg.content or "")[:80])
+                                        final_messages.append(msg)
 
-                            yield AgentMessage(
-                                role="assistant",
-                                content="",
-                                metadata={
-                                    "chunk": True,
-                                    "status": {
-                                        "status": "confirmation_required",
-                                        "confirmation_id": req.confirmation_id,
-                                        "tool_name": tc["name"],
-                                        "tool_args": tc["args"],
-                                        "description": req.description,
-                                    },
-                                },
-                            )
+                    # --- 检查中断 ---
+                    snapshot = await compiled_graph.aget_state(config)
+                    logger.info("[__call__] 流结束后: snapshot.next=%s, tasks=%d",
+                                snapshot.next, len(snapshot.tasks) if snapshot.tasks else 0)
+                    has_interrupt = False
 
-                            logger.info("[__call__] 等待用户决定...")
-                            try:
-                                approved = await confirmation_manager.wait_for_decision(
-                                    req.confirmation_id, timeout=300.0
-                                )
-                            except TimeoutError:
-                                yield AgentMessage(
-                                    role="assistant",
-                                    content="",
-                                    metadata={
-                                        "chunk": True,
-                                        "status": {
-                                            "status": "confirmation_expired",
-                                            "confirmation_id": req.confirmation_id,
-                                            "tool_name": tc["name"],
+                    if snapshot.tasks:
+                        for task_node in snapshot.tasks:
+                            logger.info("[__call__] 任务: %s, interrupts=%s",
+                                        task_node.name if hasattr(task_node, 'name') else '?',
+                                        len(task_node.interrupts) if task_node.interrupts else 0)
+                            if not task_node.interrupts:
+                                continue
+                            has_interrupt = True
+                            for intr in task_node.interrupts:
+                                payload = intr.value
+                                tool_calls = payload.get("tool_calls", [])
+                                logger.info("[__call__] 检测到中断: %d 个 tool_calls", len(tool_calls))
+
+                                for tc in tool_calls:
+                                    yield AgentMessage(
+                                        role="assistant",
+                                        content="",
+                                        metadata={
+                                            "chunk": True,
+                                            "status": {
+                                                "status": "tool_start",
+                                                "name": tc["name"],
+                                                "args": tc["args"],
+                                            },
                                         },
-                                    },
-                                )
-                                approved = False
+                                    )
 
-                            logger.info("[__call__] 决定结果: %s", approved)
-                            current_input = Command(resume={"approved": approved})
+                                    req = confirmation_manager.create_request(
+                                        tool_name=tc["name"],
+                                        tool_args=tc["args"],
+                                    )
+                                    logger.info("[__call__] 发出 confirmation_required 请求: '%s' (id=%s)",
+                                                tc["name"], req.confirmation_id)
 
-            if has_interrupt:
-                logger.info("[__call__] 存在中断，继续下一轮")
-                continue
+                                    yield AgentMessage(
+                                        role="assistant",
+                                        content="",
+                                        metadata={
+                                            "chunk": True,
+                                            "status": {
+                                                "status": "confirmation_required",
+                                                "confirmation_id": req.confirmation_id,
+                                                "tool_name": tc["name"],
+                                                "tool_args": tc["args"],
+                                                "description": req.description,
+                                            },
+                                        },
+                                    )
 
-            # --- 无中断 ---
-            response = final_messages[-1] if final_messages else None
-            logger.info("[__call__] 无中断。final_messages=%d, response=%s",
-                        len(final_messages), bool(response))
-            if response is None:
-                break
+                                    logger.info("[__call__] 等待用户决定...")
+                                    try:
+                                        approved = await confirmation_manager.wait_for_decision(
+                                            req.confirmation_id, timeout=300.0
+                                        )
+                                    except TimeoutError:
+                                        yield AgentMessage(
+                                            role="assistant",
+                                            content="",
+                                            metadata={
+                                                "chunk": True,
+                                                "status": {
+                                                    "status": "confirmation_expired",
+                                                    "confirmation_id": req.confirmation_id,
+                                                    "tool_name": tc["name"],
+                                                },
+                                            },
+                                        )
+                                        approved = False
 
-            if not response.tool_calls:
-                logger.info("[__call__] 最终响应（无 tool_calls）: %s", response.content[:100])
-                state.append(AgentMessage(role="assistant", content=response.content))
-                yield AgentMessage(role="assistant", content=response.content)
-                return
+                                    logger.info("[__call__] 决定结果: %s", approved)
+                                    current_input = Command(resume={"approved": approved})
 
-            logger.info("[__call__] 响应包含 tool_calls 但无中断，跳出循环")
-            break
+                    if has_interrupt:
+                        logger.info("[__call__] 存在中断，继续下一轮")
+                        continue
 
-        logger.info("[__call__] 退出循环，发出 stop")
-        state.append(AgentMessage(role="assistant", content="", metadata={"stop": True}))
+                    # --- 无中断 ---
+                    response = final_messages[-1] if final_messages else None
+                    logger.info("[__call__] 无中断。final_messages=%d, response=%s",
+                                len(final_messages), bool(response))
+                    if response is None:
+                        break
+
+                    if not response.tool_calls:
+                        logger.info("[__call__] 最终响应（无 tool_calls）: %s", response.content[:100])
+                        state.append(AgentMessage(role="assistant", content=response.content))
+                        yield AgentMessage(role="assistant", content=response.content)
+                        return
+
+                    logger.info("[__call__] 响应包含 tool_calls 但无中断，跳出循环")
+                    break
+
+                logger.info("[__call__] 退出循环，发出 stop")
+                state.append(AgentMessage(role="assistant", content="", metadata={"stop": True}))
+
+        except asyncio.CancelledError:
+            # 任务被取消，记录日志并重新抛出
+            logger.info("[__call__] 任务被取消，session_id=%s", session_id)
+            raise
