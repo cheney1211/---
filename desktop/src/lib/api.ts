@@ -172,6 +172,7 @@ export type AgentStatus =
       tool_name: string;
       tool_args: Record<string, unknown>;
       description: string;
+      high_risk?: boolean;
     }
   | {
       status: 'confirmation_expired';

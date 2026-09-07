@@ -32,13 +32,17 @@ from langgraph.graph import END, MessagesState, StateGraph
 from langgraph.types import interrupt, Command
 
 from assistant.core import AgentMessage, AgentState
-from assistant.tools.confirmation import ConfirmationManager
+from assistant.tools.confirmation import ConfirmationManager, ApprovalStore, is_high_risk
 from assistant.tools.workspace import validate_path, resolve_path
 from .connection_pool import ConnectionPool
 
 logger = logging.getLogger("langgraph_provider")
 
-confirmation_manager = ConfirmationManager()
+# 持久化指纹存储 —— 与 LangGraph checkpoint 共用同一个 .db 文件
+_ROOT = Path(__file__).resolve().parent.parent.parent
+_APPROVAL_DB_PATH = str(_ROOT / "data" / "langgraph_checkpoints.db")
+approval_store = ApprovalStore(_APPROVAL_DB_PATH)
+confirmation_manager = ConfirmationManager(store=approval_store)
 
 
 class LangGraphProvider:
@@ -54,17 +58,16 @@ class LangGraphProvider:
         *,
         tools: Optional[List[BaseTool]] = None,
         system_message: str | None = None,
-        max_tool_rounds: int = 5,
         confirmation_mode: str = "confirm",
+        workspace_root: str = "",
     ) -> None:
         self._llm = llm
         self._tools = tools or []
         self._system_message = system_message
-        self._max_tool_rounds = max_tool_rounds
         self._confirmation_mode = confirmation_mode
+        self._workspace_root = workspace_root
         self._tool_map: Dict[str, BaseTool] = {t.name: t for t in self._tools}
-        _ROOT = Path(__file__).resolve().parent.parent.parent
-        self._ckpt_path = str(_ROOT / "data" / "langgraph_checkpoints.db")
+        self._ckpt_path = _APPROVAL_DB_PATH
         (_ROOT / "data").mkdir(parents=True, exist_ok=True)
         LangGraphProvider._instances.append(self)
         logger.info("LangGraphProvider 初始化完成，共 %d 个工具: %s",
@@ -117,6 +120,7 @@ class LangGraphProvider:
         )
         tool_map = self._tool_map
         confirmation_mode = self._confirmation_mode
+        workspace_root = self._workspace_root
 
         def agent_node(state: MessagesState) -> dict:
             logger.info("[agent_node] 使用 %d 条消息调用 LLM", len(state["messages"]))
@@ -216,6 +220,10 @@ class LangGraphProvider:
                     continue
                 needs_confirm = tool.check_requires_confirmation(**tc.get("args", {}))
                 if needs_confirm:
+                    # 检查是否已允许（指纹匹配）
+                    if confirmation_manager.check_fingerprint_allowed(workspace_root, tc["name"], tc.get("args", {})):
+                        logger.info("[route_after_agent] 工具 '%s' 已允许（指纹匹配）-> path_validator", tc["name"])
+                        continue
                     logger.info("[route_after_agent] 工具 '%s' 需要确认 -> human_review", tc["name"])
                     return "human_review"
             logger.info("[route_after_agent] 无需确认 -> path_validator")
@@ -308,8 +316,10 @@ class LangGraphProvider:
                 current_input: Any = {"messages": lc_messages}
                 logger.info("[__call__] 开始执行，thread_id=%s，共 %d 条消息", thread_id, len(lc_messages))
 
-                for _round in range(self._max_tool_rounds):
-                    logger.info("[__call__] 第 %d 轮", _round + 1)
+                _round = 0
+                while True:
+                    _round += 1
+                    logger.info("[__call__] 第 %d 轮", _round)
                     final_messages: list[AIMessage] = []
 
                     async for event in compiled_graph.astream(
@@ -385,6 +395,7 @@ class LangGraphProvider:
                                     req = confirmation_manager.create_request(
                                         tool_name=tc["name"],
                                         tool_args=tc["args"],
+                                        workspace_root=self._workspace_root,
                                     )
                                     logger.info("[__call__] 发出 confirmation_required 请求: '%s' (id=%s)",
                                                 tc["name"], req.confirmation_id)
@@ -400,6 +411,7 @@ class LangGraphProvider:
                                                 "tool_name": tc["name"],
                                                 "tool_args": tc["args"],
                                                 "description": req.description,
+                                                "high_risk": is_high_risk(tc["name"], tc["args"]),
                                             },
                                         },
                                     )

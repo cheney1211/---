@@ -117,7 +117,16 @@ async def chat_stream(request: Request, body: ChatRequest):
 @router.post("/confirm/{confirmation_id}")
 async def confirm_tool(confirmation_id: str, request: ConfirmRequest):
     """批准或拒绝待处理的工具确认请求。"""
-    found = confirmation_manager.resolve(confirmation_id, request.approved)
+    # 获取工作区根目录（从 confirmation_manager 的请求中获取）
+    req = confirmation_manager.get_request(confirmation_id)
+    workspace_root = req.workspace_root if req else ""
+
+    found = confirmation_manager.resolve(
+        confirmation_id,
+        request.approved,
+        allow_always=request.allow_always or False,
+        workspace_root=workspace_root,
+    )
     if not found:
         return JSONResponse(
             status_code=404,

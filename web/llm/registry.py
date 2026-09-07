@@ -124,6 +124,7 @@ def get_provider(
     system_message: str | None = None,
     tools: list | None = None,
     confirmation_mode: str = "confirm",
+    workspace_root: str = "",
     **kwargs,
 ) -> LangGraphProvider:
     """构建带 LangGraph 的 agent-ready provider。"""
@@ -136,6 +137,7 @@ def get_provider(
         tools=tools or [],
         system_message=system_message,
         confirmation_mode=confirmation_mode,
+        workspace_root=workspace_root,
     )
 
 

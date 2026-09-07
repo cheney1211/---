@@ -7,6 +7,7 @@ interface ConfirmationData {
   tool_name: string;
   tool_args: Record<string, unknown>;
   description: string;
+  high_risk?: boolean;
 }
 
 interface Props {
@@ -76,14 +77,19 @@ export default function ConfirmationDialog({
       description: "仅允许这一次",
       action: () => onApprove(false),
     },
+    // 高危操作时隐藏"始终允许"选项
+    ...(data.high_risk
+      ? []
+      : [
+          {
+            id: 2,
+            title: "始终允许本项目",
+            description: "后续相同操作（工具+参数）不再询问",
+            action: () => onApprove(true),
+          },
+        ]),
     {
-      id: 2,
-      title: "始终允许本项目",
-      description: "后续相同文件操作不再询问",
-      action: () => onApprove(true),
-    },
-    {
-      id: 3,
+      id: data.high_risk ? 2 : 3,
       title: "拒绝",
       description: "这次先拒绝",
       action: onReject,
@@ -127,15 +133,12 @@ export default function ConfirmationDialog({
       } else if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
         options[selectedIndex]?.action();
-      } else if (e.key === "1") {
-        e.preventDefault();
-        options[0]?.action();
-      } else if (e.key === "2") {
-        e.preventDefault();
-        options[1]?.action();
-      } else if (e.key === "3") {
-        e.preventDefault();
-        options[2]?.action();
+      } else if (e.key >= "1" && e.key <= "9") {
+        const idx = parseInt(e.key, 10) - 1;
+        if (idx < options.length) {
+          e.preventDefault();
+          options[idx]?.action();
+        }
       } else if (e.key === "Escape") {
         e.preventDefault();
         onReject();

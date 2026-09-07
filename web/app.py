@@ -37,13 +37,18 @@ async def lifespan(app: FastAPI):
             len(recovered),
         )
 
+    # 初始化指纹持久化存储（建表 + WAL）
+    from web.llm.langgraph_provider import approval_store
+    approval_store.init()
+
     # 确保工作空间根目录存在
     (_ROOT / "workSpace").mkdir(exist_ok=True)
 
     logger.info("数据库已就绪")
     yield
     # ---- 关闭 ----
-    from web.llm.langgraph_provider import LangGraphProvider
+    from web.llm.langgraph_provider import LangGraphProvider, approval_store as store
+    store.close()
     await LangGraphProvider.close_all()
     engine = get_engine()
     await engine.dispose()

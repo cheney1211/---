@@ -124,7 +124,7 @@ def resolve_provider(
     register_tool(CallSkillTool())
 
     tools = get_tools()
-    return get_provider(provider_name, model=model, system_message=system_message, tools=tools, confirmation_mode=mode)
+    return get_provider(provider_name, model=model, system_message=system_message, tools=tools, confirmation_mode=mode, workspace_root=workspace or "")
 
 
 def _load_project_memory(root_path: str | None) -> str | None:
