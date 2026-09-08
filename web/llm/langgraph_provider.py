@@ -454,6 +454,21 @@ class LangGraphProvider:
                         logger.info("[__call__] 最终响应（无 tool_calls）: %s", response.content[:100])
                         state.append(AgentMessage(role="assistant", content=response.content))
                         yield AgentMessage(role="assistant", content=response.content)
+                        # 发送 token usage 数据
+                        usage = getattr(response, "usage_metadata", None)
+                        if usage:
+                            yield AgentMessage(
+                                role="assistant", content="",
+                                metadata={
+                                    "chunk": True,
+                                    "status": {
+                                        "status": "usage",
+                                        "prompt_tokens": usage.get("input_tokens", 0),
+                                        "completion_tokens": usage.get("output_tokens", 0),
+                                        "total_tokens": usage.get("total_tokens", 0),
+                                    },
+                                },
+                            )
                         return
 
                     logger.info("[__call__] 响应包含 tool_calls 但无中断，跳出循环")

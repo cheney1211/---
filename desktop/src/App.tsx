@@ -1,12 +1,18 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { X, Trash2, Check, Minus, Square, Copy, Folder, PanelLeft } from "lucide-react";
 import ChatMessage from "@/components/ChatMessage";
 import ChatInput from "@/components/ChatInput";
 import ConfirmationDialog from "@/components/ConfirmationDialog";
+import ContextIndicator from "@/components/ContextIndicator";
+import SettingsPanel, {
+  type ContextSettings,
+  loadContextSettings,
+  saveContextSettings,
+} from "@/components/SettingsPanel";
+import ContextSettingsPanel from "@/components/ContextSettingsPanel";
 import Sidebar, { type SessionMeta } from "@/components/Sidebar";
 import SuggestedPrompts from "@/components/SuggestedPrompts";
 import {
-  sendMessageStream,
   sendMessageStreamWithSession,
   checkHealth,
   getSessionHistory,
@@ -15,10 +21,10 @@ import {
   resolveConfirmation,
   listSessions,
   listProjects,
+  listProvidersData,
   createProject as apiCreateProject,
   generateSessionTitle,
   updateSessionTitle,
-  type AgentStatus,
   initApiBase,
   API_BASE,
 } from "@/lib/api";
@@ -120,6 +126,25 @@ export default function App() {
   const [projects, setProjects] = useState<{ id: string; name: string; root_path: string | null }[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | undefined>();
 
+  // ---- context management state ----
+  const [contextSettings, setContextSettings] = useState<ContextSettings>(loadContextSettings);
+  const [modelSettingsOpen, setModelSettingsOpen] = useState(false);
+  const [contextSettingsOpen, setContextSettingsOpen] = useState(false);
+  const [contextStats, setContextStats] = useState<{
+    totalTokens: number;
+    maxTokens: number;
+    usagePercent: number;
+  } | null>(null);
+  const [isCompressing, setIsCompressing] = useState(false);
+  const [compressionResult, setCompressionResult] = useState<{ freedPercent: number } | null>(null);
+  const [activeModelContextWindow, setActiveModelContextWindow] = useState(0);
+
+  // 持久化设置变更
+  const handleContextSettingsChange = useCallback((newSettings: ContextSettings) => {
+    setContextSettings(newSettings);
+    saveContextSettings(newSettings);
+  }, []);
+
   // ---- init ----
   useEffect(() => {
     // 全局错误处理
@@ -143,6 +168,23 @@ export default function App() {
 
       // 加载会话列表
       loadSessions();
+
+      // 加载活跃模型的 context_window
+      listProvidersData().then((data) => {
+        for (const p of data.providers) {
+          if (p.is_active) {
+            for (const m of p.models) {
+              if (m.id === data.active_model_id) {
+                setActiveModelContextWindow(m.context_window);
+                return;
+              }
+            }
+            if (p.models.length > 0) {
+              setActiveModelContextWindow(p.models[0].context_window);
+            }
+          }
+        }
+      }).catch(() => {});
 
       // 初始化窗口最大化状态
       if (window.electronAPI) {
@@ -323,6 +365,9 @@ export default function App() {
       setSelectedTurnIds(new Set());
       setEditingMsgId(null);
       setConfirmation(null);
+      setContextStats(null);
+      setIsCompressing(false);
+      setCompressionResult(null);
 
       // 优先使用 buffer，否则从数据库加载
       const session = sessionManager.get(sid);
@@ -354,6 +399,9 @@ export default function App() {
     setSelectedTurnIds(new Set());
     setEditingMsgId(null);
     setConfirmation(null);
+    setContextStats(null);
+    setIsCompressing(false);
+    setCompressionResult(null);
   }, []);
 
   const handleNewSessionInProject = useCallback((projectId: string) => {
@@ -367,6 +415,9 @@ export default function App() {
     setSelectedTurnIds(new Set());
     setEditingMsgId(null);
     setConfirmation(null);
+    setContextStats(null);
+    setIsCompressing(false);
+    setCompressionResult(null);
   }, []);
 
   const handleDeleteSession = useCallback(
@@ -559,6 +610,26 @@ export default function App() {
             });
           } else if (status.status === "confirmation_expired") {
             setConfirmation(null);
+          } else if (status.status === "context_stats") {
+            setContextStats({
+              totalTokens: status.total_tokens,
+              maxTokens: status.max_tokens,
+              usagePercent: status.usage_percent,
+            });
+          } else if (status.status === "compressing") {
+            setIsCompressing(true);
+            setCompressionResult(null);
+          } else if (status.status === "compressed") {
+            setIsCompressing(false);
+            setCompressionResult({ freedPercent: status.freed_percent });
+          } else if (status.status === "usage") {
+            setContextStats((prev) => prev ? {
+              ...prev,
+              totalTokens: status.prompt_tokens,
+              usagePercent: prev.maxTokens > 0
+                ? Math.round((status.prompt_tokens / (prev.maxTokens - 4096)) * 10000) / 100
+                : 0,
+            } : prev);
           }
         },
         onChunk: (token) => {
@@ -613,12 +684,12 @@ export default function App() {
           setConfirmation(null);
           session.isNew = false;
         },
-      }, confirmationMode);
+      }, confirmationMode, undefined, contextSettings.threshold, contextSettings.keepRecentTurns, activeModelContextWindow);
 
       // 更新 sessionId
       if (!sessionId) setSessionId(currentSessionId);
     },
-    [sessionId, messages, updateSessionMeta, adjustSessionMessageCount, confirmationMode]
+    [sessionId, messages, updateSessionMeta, adjustSessionMessageCount, confirmationMode, contextSettings, activeModelContextWindow]
   );
 
   // ---- latest user msg ----
@@ -688,6 +759,26 @@ export default function App() {
             });
           } else if (status.status === "confirmation_expired") {
             setConfirmation(null);
+          } else if (status.status === "context_stats") {
+            setContextStats({
+              totalTokens: status.total_tokens,
+              maxTokens: status.max_tokens,
+              usagePercent: status.usage_percent,
+            });
+          } else if (status.status === "compressing") {
+            setIsCompressing(true);
+            setCompressionResult(null);
+          } else if (status.status === "compressed") {
+            setIsCompressing(false);
+            setCompressionResult({ freedPercent: status.freed_percent });
+          } else if (status.status === "usage") {
+            setContextStats((prev) => prev ? {
+              ...prev,
+              totalTokens: status.prompt_tokens,
+              usagePercent: prev.maxTokens > 0
+                ? Math.round((status.prompt_tokens / (prev.maxTokens - 4096)) * 10000) / 100
+                : 0,
+            } : prev);
           }
         },
         onChunk: (token) => {
@@ -748,12 +839,12 @@ export default function App() {
           setConfirmation(null);
           session.isNew = false;
         },
-      }, confirmationMode, activeProjectId);
+      }, confirmationMode, activeProjectId, contextSettings.threshold, contextSettings.keepRecentTurns, activeModelContextWindow);
 
       // 更新 sessionId
       if (!sessionId) setSessionId(currentSessionId);
     },
-    [sessionId, updateSessionMeta, selectMode, confirmationMode, activeProjectId]
+    [sessionId, updateSessionMeta, selectMode, confirmationMode, activeProjectId, contextSettings, activeModelContextWindow]
   );
 
   const handleStop = () => {
@@ -922,14 +1013,27 @@ export default function App() {
             onExpire={handleConfirmExpire}
           />
         ) : (
-          <ChatInput
-            onSend={handleSend}
-            disabled={isCurrentStreaming}
-            onStop={handleStop}
-            mode={confirmationMode}
-            onModeChange={setConfirmationMode}
-            isEmpty={isEmpty}
-          />
+          <>
+            {contextStats && messages.length > 0 && (
+              <ContextIndicator
+                totalTokens={contextStats.totalTokens}
+                maxTokens={contextStats.maxTokens}
+                usagePercent={contextStats.usagePercent}
+                isCompressing={isCompressing}
+                compressionResult={compressionResult}
+              />
+            )}
+            <ChatInput
+              onSend={handleSend}
+              disabled={isCurrentStreaming}
+              onStop={handleStop}
+              mode={confirmationMode}
+              onModeChange={setConfirmationMode}
+              isEmpty={isEmpty}
+              onOpenModelSettings={() => setModelSettingsOpen(true)}
+              onOpenContextSettings={() => setContextSettingsOpen(true)}
+            />
+          </>
         )}
       </div>
 
@@ -954,6 +1058,18 @@ export default function App() {
           </button>
         </div>
       )}
+
+      <SettingsPanel
+        isOpen={modelSettingsOpen}
+        onClose={() => setModelSettingsOpen(false)}
+      />
+
+      <ContextSettingsPanel
+        isOpen={contextSettingsOpen}
+        onClose={() => setContextSettingsOpen(false)}
+        settings={contextSettings}
+        onChange={handleContextSettingsChange}
+      />
     </div>
   );
 }

@@ -33,6 +33,12 @@ export interface ConfirmationData {
   description: string;
 }
 
+export interface ContextStats {
+  totalTokens: number;
+  maxTokens: number;
+  usagePercent: number;
+}
+
 export interface SessionInstance {
   id: string;
   status: SessionStatus;
@@ -44,6 +50,9 @@ export interface SessionInstance {
   lastActivity: number;
   title?: string;
   isNew?: boolean;  // 标记是否是新会话（用于标题生成）
+  contextStats?: ContextStats;
+  isCompressing?: boolean;
+  compressionResult?: { freedPercent: number } | null;
 }
 
 export type ChangeType = 'chunk' | 'status' | 'confirmation' | 'done' | 'error';
@@ -89,6 +98,9 @@ export class SessionManager {
         confirmation: null,
         isForeground: false,
         lastActivity: Date.now(),
+        contextStats: undefined,
+        isCompressing: false,
+        compressionResult: null,
       };
       this.sessions.set(sessionId, session);
     }
@@ -246,6 +258,36 @@ export class SessionManager {
     session.confirmation = null;
     session.status = 'streaming';
     this.notify(sessionId, 'confirmation');
+  }
+
+  // ======== 上下文管理 ========
+
+  updateContextStats(sessionId: string, stats: ContextStats): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+
+    session.contextStats = stats;
+    session.lastActivity = Date.now();
+    this.notify(sessionId, 'status');
+  }
+
+  setCompressing(sessionId: string, isCompressing: boolean): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+
+    session.isCompressing = isCompressing;
+    session.lastActivity = Date.now();
+    this.notify(sessionId, 'status');
+  }
+
+  setCompressionResult(sessionId: string, result: { freedPercent: number } | null): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+
+    session.compressionResult = result;
+    session.isCompressing = false;
+    session.lastActivity = Date.now();
+    this.notify(sessionId, 'status');
   }
 
   addMessage(sessionId: string, message: Message): void {

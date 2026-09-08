@@ -37,6 +37,9 @@ class ChatRequest(BaseModel):
     provider: str | None = None
     model: str | None = None
     mode: str = "confirm"
+    compression_threshold: float = 80.0
+    keep_recent_turns: int = 5
+    context_window_size: int = 128000
 
 
 class ChatResponse(BaseModel):
@@ -64,6 +67,9 @@ async def chat(request: ChatRequest):
         session_id, state, request.message,
         project_id=request.project_id,
         provider=request.provider, model=request.model, mode=request.mode,
+        compression_threshold=request.compression_threshold,
+        keep_recent_turns=request.keep_recent_turns,
+        context_window_size=request.context_window_size,
     )
     return ChatResponse(reply=reply, session_id=session_id)
 
@@ -82,6 +88,9 @@ async def chat_stream(request: Request, body: ChatRequest):
                 session_id, state, body.message,
                 project_id=body.project_id,
                 provider=body.provider, model=body.model, mode=body.mode,
+                compression_threshold=body.compression_threshold,
+                keep_recent_turns=body.keep_recent_turns,
+                context_window_size=body.context_window_size,
             ):
                 # 检查客户端是否断开
                 if await request.is_disconnected():

@@ -3,13 +3,9 @@
 
 支持两种 provider 类型：
 1. 内置特殊 provider（ollama、dummy）—— 有独立适配器逻辑
-2. 自定义 OpenAI 兼容 provider —— 通过环境变量动态配置，无需预注册
+2. 自定义 OpenAI 兼容 provider —— 通过 config.json 或环境变量配置
 
-用户只需设置环境变量即可添加任意 OpenAI 兼容模型：
-    LLM_PROVIDER=my-model
-    my-model_API_KEY=sk-xxx
-    my-model_MODEL=gpt-4o
-    my-model_BASE_URL=https://api.example.com/v1
+配置优先级：config.json > 环境变量
 """
 
 from __future__ import annotations
@@ -27,20 +23,30 @@ _DEFAULT_PROMPT_FILE = _PROJECT_ROOT / "assistant" / "prompts" / "system_prompt.
 
 
 # ---------------------------------------------------------------------------
-# 环境变量读取
+# 配置读取（config.json 优先，回退到环境变量）
 # ---------------------------------------------------------------------------
 
-def _read_env(name: str) -> dict:
-    """读取 {NAME}_API_KEY、{NAME}_MODEL、{NAME}_BASE_URL 环境变量。
+def _read_provider_config(name: str) -> dict:
+    """读取 provider 配置，config.json 优先，回退到环境变量。"""
+    from web.config import get_llm_config
 
-    对于自定义 provider，API_KEY 必填；MODEL 和 BASE_URL 可选。
-    """
+    # 如果请求的是当前活跃 provider，直接使用 config 的合并结果
+    current = get_llm_config()
+    if current["provider"] == name:
+        api_key = current["api_key"]
+        if not api_key and name not in ("ollama", "dummy"):
+            raise RuntimeError(f"provider '{name}' 的 API key 未配置")
+        return {
+            "api_key": api_key,
+            "model": current["model"],
+            "base_url": current["base_url"] or None,
+        }
+
+    # 非当前 provider，回退到环境变量
     prefix = name.upper()
-    api_key = os.getenv(f"{prefix}_API_KEY")
-    if not api_key:
-        raise RuntimeError(
-            f"环境变量 {prefix}_API_KEY 未设置（provider '{name}' 需要）"
-        )
+    api_key = os.getenv(f"{prefix}_API_KEY", "")
+    if not api_key and name not in ("ollama", "dummy"):
+        raise RuntimeError(f"环境变量 {prefix}_API_KEY 未设置（provider '{name}' 需要）")
     return {
         "api_key": api_key,
         "model": os.getenv(f"{prefix}_MODEL") or "",
@@ -53,10 +59,10 @@ def _read_env(name: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def _build_openai_adapter(name: str) -> LLMAdapter:
-    """从环境变量构建 OpenAI 兼容适配器。"""
+    """从配置构建 OpenAI 兼容适配器。"""
     from .openai_adapter import OpenAIAdapter
 
-    cfg = _read_env(name)
+    cfg = _read_provider_config(name)
     return OpenAIAdapter(
         model=cfg["model"],
         api_key=cfg["api_key"],
@@ -102,13 +108,13 @@ def get_adapter(
     if name == "ollama":
         return _build_ollama_adapter()
 
-    # 所有其他 provider：OpenAI 兼容，动态读取环境变量
+    # 所有其他 provider：OpenAI 兼容
     adapter = _build_openai_adapter(name)
     # 如果调用方指定了 model 覆盖，需要替换底层 LLM 的 model
     if model:
         from .openai_adapter import OpenAIAdapter
 
-        cfg = _read_env(name)
+        cfg = _read_provider_config(name)
         adapter = OpenAIAdapter(
             model=model,
             api_key=cfg["api_key"],
@@ -154,12 +160,65 @@ def _build_dummy_provider(*, system_message: str | None = None) -> LangGraphProv
 
 
 # ---------------------------------------------------------------------------
-# Provider 信息
+# Provider 目录（下拉选择 + 默认值）
 # ---------------------------------------------------------------------------
 
+PROVIDER_CATALOG: List[Dict[str, Any]] = [
+    {
+        "name": "openai",
+        "label": "OpenAI",
+        "description": "OpenAI 官方 API",
+        "default_base_url": "https://api.openai.com/v1",
+        "recommended_models": ["gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini", "o3", "o4-mini"],
+        "requires_api_key": True,
+    },
+    {
+        "name": "deepseek",
+        "label": "DeepSeek",
+        "description": "DeepSeek AI",
+        "default_base_url": "https://api.deepseek.com/v1",
+        "recommended_models": ["deepseek-chat", "deepseek-coder", "deepseek-reasoner"],
+        "requires_api_key": True,
+    },
+    {
+        "name": "mimo",
+        "label": "Mimo (小米)",
+        "description": "小米 Mimo 大模型",
+        "default_base_url": "https://api.xiaomimimo.com/v1",
+        "recommended_models": ["mimo-v2.5", "mimo-v2.5-pro"],
+        "requires_api_key": True,
+    },
+    {
+        "name": "anthropic",
+        "label": "Anthropic",
+        "description": "Claude 系列模型",
+        "default_base_url": "https://api.anthropic.com/v1",
+        "recommended_models": ["claude-sonnet-4-20250514", "claude-haiku-4-20250514"],
+        "requires_api_key": True,
+    },
+    {
+        "name": "ollama",
+        "label": "Ollama (本地)",
+        "description": "本地 Ollama 推理，不需要 API Key",
+        "default_base_url": "http://localhost:11434",
+        "recommended_models": ["qwen2.5:7b", "llama3.1:8b", "deepseek-r1:7b", "mistral:7b"],
+        "requires_api_key": False,
+    },
+    {
+        "name": "openai_compatible",
+        "label": "OpenAI 兼容 (自定义)",
+        "description": "任何 OpenAI 兼容的 API 端点",
+        "default_base_url": "",
+        "recommended_models": [],
+        "requires_api_key": True,
+    },
+]
+
+
 def get_default_provider_name() -> str:
-    """返回默认 provider 名称（读取 LLM_PROVIDER 环境变量，默认 openai）。"""
-    return os.getenv("LLM_PROVIDER", "openai").strip().lower()
+    """返回默认 provider 名称（config.json 优先，回退到环境变量）。"""
+    from web.config import get_llm_config
+    return get_llm_config()["provider"]
 
 
 def get_default_system_message() -> str:
@@ -177,37 +236,31 @@ def get_default_system_message() -> str:
 
 
 def list_providers() -> List[Dict[str, Any]]:
-    """返回当前可用的 provider 列表。
+    """返回当前可用的 provider 列表。"""
+    from web.config import get_llm_config, mask_api_key
 
-    包含内置特殊 provider 和当前通过环境变量配置的默认 provider。
-    """
     result = [
         {
             "name": "ollama",
             "description": "本地 Ollama 模型（不需要 API key）",
             "default_model": "qwen2.5:7b",
-            "env_keys": ["OLLAMA_MODEL", "OLLAMA_BASE_URL"],
         },
         {
             "name": "dummy",
             "description": "测试用回显适配器（不需要 API key）",
             "default_model": "dummy",
-            "env_keys": [],
         },
     ]
 
-    # 尝试读取当前默认 provider 的配置
-    default_name = get_default_provider_name()
+    # 当前活跃 provider 的实际配置
+    llm_cfg = get_llm_config()
+    default_name = llm_cfg["provider"]
     if default_name not in ("ollama", "dummy"):
-        prefix = default_name.upper()
-        model = os.getenv(f"{prefix}_MODEL") or ""
-        has_key = bool(os.getenv(f"{prefix}_API_KEY"))
         result.append({
             "name": default_name,
-            "description": f"OpenAI 兼容模型（通过 {prefix}_* 环境变量配置）",
-            "default_model": model,
-            "env_keys": [f"{prefix}_API_KEY", f"{prefix}_MODEL", f"{prefix}_BASE_URL"],
-            "configured": has_key,
+            "description": "OpenAI 兼容模型",
+            "default_model": llm_cfg["model"],
+            "configured": bool(llm_cfg["api_key"]),
         })
 
     return result

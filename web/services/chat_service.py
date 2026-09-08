@@ -9,6 +9,12 @@ from pathlib import Path
 from typing import AsyncIterable, Dict, Optional
 
 from assistant.core import AgentMessage, AgentState
+from assistant.context_manager import (
+    get_context_usage,
+    should_compress,
+    compress_context,
+    get_model_context_window,
+)
 from assistant.tools import get_tools, register as register_tool
 from assistant.tools.builtin.call_skill import CallSkillTool, configure as configure_call_skill
 from assistant.skills import build_skills_system_prompt
@@ -171,6 +177,9 @@ async def process_message(
     provider: str | None = None,
     model: str | None = None,
     mode: str = "confirm",
+    compression_threshold: float = 80.0,
+    keep_recent_turns: int = 5,
+    context_window_size: int = 128000,
 ) -> str:
     """非流式处理：持久化用户消息，运行提供者，持久化所有响应，返回回复。"""
     user_msg = AgentMessage(role="user", content=user_text)
@@ -178,6 +187,33 @@ async def process_message(
     state.append(user_msg)
 
     root_path = await _resolve_project_root(project_id)
+    system_message = get_default_system_message()
+
+    # 检查是否需要压缩
+    if should_compress(
+        state.messages, system_message,
+        threshold=compression_threshold,
+        provider=provider, model=model,
+        context_window_size=context_window_size,
+    ):
+        logger.info("[process_message] 会话 %s 达到压缩阈值，开始压缩", session_id)
+        existing_summary = await SessionRepo.get_summary(session_id)
+        provider_name = provider or get_default_provider_name()
+        adapter = get_adapter(provider_name, model=model)
+
+        async def llm_caller(prompt: str) -> str:
+            result = adapter.llm.invoke(prompt)
+            return result.content if hasattr(result, "content") else str(result)
+
+        result = await compress_context(
+            session_id, state, system_message, llm_caller,
+            keep_recent_turns=keep_recent_turns,
+            existing_summary=existing_summary,
+        )
+        if result.summary:
+            combined = f"{existing_summary}\n\n---\n\n{result.summary}" if existing_summary else result.summary
+            await SessionRepo.set_summary(session_id, combined)
+
     with project_context(project_id, root_path=root_path):
         llm_provider = resolve_provider(
             project_id=project_id, root_path=root_path,
@@ -208,6 +244,9 @@ async def process_message_stream(
     provider: str | None = None,
     model: str | None = None,
     mode: str = "confirm",
+    compression_threshold: float = 80.0,
+    keep_recent_turns: int = 5,
+    context_window_size: int = 128000,
 ) -> AsyncIterable[dict]:
     """流式处理：生成 SSE 事件字典（session / status / chunk / done）。"""
     user_msg = AgentMessage(role="user", content=user_text)
@@ -215,6 +254,90 @@ async def process_message_stream(
     state.append(user_msg)
 
     root_path = await _resolve_project_root(project_id)
+    system_message = get_default_system_message()
+
+    # 发送上下文使用统计
+    ctx_stats = get_context_usage(
+        state.messages, system_message,
+        provider=provider, model=model,
+        context_window_size=context_window_size,
+    )
+    yield {
+        "event": "status",
+        "data": {
+            "status": "context_stats",
+            "total_tokens": ctx_stats.total_tokens,
+            "max_tokens": ctx_stats.max_tokens,
+            "usage_percent": ctx_stats.usage_percent,
+            "model": model or get_default_provider_name(),
+        },
+    }
+
+    # 检查是否需要压缩
+    if should_compress(
+        state.messages, system_message,
+        threshold=compression_threshold,
+        provider=provider, model=model,
+        context_window_size=context_window_size,
+    ):
+        logger.info("[stream] 会话 %s 达到压缩阈值 (%.1f%%)，开始压缩", session_id, ctx_stats.usage_percent)
+
+        # 通知前端正在压缩
+        yield {
+            "event": "status",
+            "data": {"status": "compressing", "message": "正在压缩上下文..."},
+        }
+
+        existing_summary = await SessionRepo.get_summary(session_id)
+        provider_name = provider or get_default_provider_name()
+        adapter = get_adapter(provider_name, model=model)
+
+        async def llm_caller(prompt: str) -> str:
+            result = adapter.llm.invoke(prompt)
+            return result.content if hasattr(result, "content") else str(result)
+
+        compress_result = await compress_context(
+            session_id, state, system_message, llm_caller,
+            keep_recent_turns=keep_recent_turns,
+            existing_summary=existing_summary,
+        )
+
+        if compress_result.summary:
+            combined = (
+                f"{existing_summary}\n\n---\n\n{compress_result.summary}"
+                if existing_summary else compress_result.summary
+            )
+            await SessionRepo.set_summary(session_id, combined)
+
+        # 通知前端压缩完成
+        yield {
+            "event": "status",
+            "data": {
+                "status": "compressed",
+                "before_tokens": compress_result.before_tokens,
+                "after_tokens": compress_result.after_tokens,
+                "freed_percent": compress_result.freed_percent,
+                "compressed_count": compress_result.compressed_count,
+                "kept_count": compress_result.kept_count,
+            },
+        }
+
+        # 压缩后重新发送上下文统计
+        ctx_stats = get_context_usage(
+            state.messages, system_message,
+            provider=provider, model=model,
+            context_window_size=context_window_size,
+        )
+        yield {
+            "event": "status",
+            "data": {
+                "status": "context_stats",
+                "total_tokens": ctx_stats.total_tokens,
+                "max_tokens": ctx_stats.max_tokens,
+                "usage_percent": ctx_stats.usage_percent,
+                "model": model or get_default_provider_name(),
+            },
+        }
 
     # 获取信号量（限制并发推理数）
     async with _session_semaphore:

@@ -178,6 +178,31 @@ export type AgentStatus =
       status: 'confirmation_expired';
       confirmation_id: string;
       tool_name: string;
+    }
+  | {
+      status: 'context_stats';
+      total_tokens: number;
+      max_tokens: number;
+      usage_percent: number;
+      model: string;
+    }
+  | {
+      status: 'compressing';
+      message: string;
+    }
+  | {
+      status: 'compressed';
+      before_tokens: number;
+      after_tokens: number;
+      freed_percent: number;
+      compressed_count: number;
+      kept_count: number;
+    }
+  | {
+      status: 'usage';
+      prompt_tokens: number;
+      completion_tokens: number;
+      total_tokens: number;
     };
 
 /** 发送消息并获取响应（非流式）。 */
@@ -301,7 +326,10 @@ export function sendMessageStreamWithSession(
     onError: (error: string) => void;
   },
   mode: string = 'confirm',
-  projectId?: string
+  projectId?: string,
+  compressionThreshold?: number,
+  keepRecentTurns?: number,
+  contextWindowSize?: number
 ): AbortController {
   const controller = new AbortController();
   sessionInstance.abortController = controller;
@@ -319,6 +347,9 @@ export function sendMessageStreamWithSession(
           session_id: sessionInstance.id.startsWith('temp-') ? undefined : sessionInstance.id,
           project_id: projectId,
           mode,
+          compression_threshold: compressionThreshold ?? 80,
+          keep_recent_turns: keepRecentTurns ?? 5,
+          context_window_size: contextWindowSize ?? 128000,
         }),
         signal: controller.signal,
       });
@@ -512,5 +543,209 @@ export async function getSkillDetails(name: string): Promise<any> {
 export async function listProviders(): Promise<any[]> {
   const res = await fetch(`${API_BASE}/providers`);
   if (!res.ok) throw new Error(`Failed to list providers: ${res.status}`);
+  return res.json();
+}
+
+// ---- LLM 配置 ----
+
+export interface LlmConfig {
+  provider: string;
+  api_key: string;       // 已脱敏
+  api_key_set: boolean;
+  model: string;
+  base_url: string;
+}
+
+export interface ProviderInfo {
+  name: string;
+  label: string;
+  description: string;
+  default_base_url: string;
+  recommended_models: string[];
+  requires_api_key: boolean;
+}
+
+/** 获取 Provider 目录（含默认 base_url 和推荐 model）。 */
+export async function getProviderCatalog(): Promise<ProviderInfo[]> {
+  const res = await fetch(`${API_BASE}/providers/catalog`);
+  if (!res.ok) throw new Error(`Failed to get provider catalog: ${res.status}`);
+  const data = await res.json();
+  return data.catalog;
+}
+
+/** 获取当前 LLM 配置（API key 已脱敏）。 */
+export async function getLlmConfig(): Promise<LlmConfig> {
+  const res = await fetch(`${API_BASE}/config/llm`);
+  if (!res.ok) throw new Error(`Failed to get LLM config: ${res.status}`);
+  return res.json();
+}
+
+/** 更新 LLM 配置。只传需要修改的字段。 */
+export async function saveLlmConfig(config: {
+  provider?: string;
+  api_key?: string;
+  model?: string;
+  base_url?: string;
+}): Promise<LlmConfig> {
+  const res = await fetch(`${API_BASE}/config/llm`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config),
+  });
+  if (!res.ok) throw new Error(`Failed to save LLM config: ${res.status}`);
+  return res.json();
+}
+
+// ---- 多 Provider 管理 ----
+
+export interface ModelInfo {
+  id: string;
+  display_name: string;
+  context_window: number;
+  max_output_tokens: number;
+  input_types?: string[];   // ["文本", "图片", "视频", "PDF"]
+  output_types?: string[];  // ["文本"]
+}
+
+export interface ProviderData {
+  id: string;
+  name: string;
+  base_url: string;
+  api_key_masked: string;
+  api_key_set: boolean;
+  api_format: string;   // openai | anthropic | ollama
+  models: ModelInfo[];
+  is_active: boolean;
+}
+
+/** 获取所有已配置的 Provider 列表。 */
+export async function listProvidersData(): Promise<{ providers: ProviderData[]; active_provider_id?: string; active_model_id?: string }> {
+  const res = await fetch(`${API_BASE}/providers/list`);
+  if (!res.ok) throw new Error(`Failed to list providers: ${res.status}`);
+  return res.json();
+}
+
+/** 添加新 Provider。 */
+export async function createProvider(data: {
+  name: string; base_url: string; api_key: string; api_format: string;
+}): Promise<{ status: string; provider_id: string }> {
+  const res = await fetch(`${API_BASE}/providers`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error(`Failed to create provider: ${res.status}`);
+  return res.json();
+}
+
+/** 更新 Provider。 */
+export async function updateProviderApi(id: string, data: {
+  name?: string; base_url?: string; api_key?: string; api_format?: string;
+}): Promise<{ status: string }> {
+  const res = await fetch(`${API_BASE}/providers/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error(`Failed to update provider: ${res.status}`);
+  return res.json();
+}
+
+/** 删除 Provider。 */
+export async function deleteProviderApi(id: string): Promise<{ status: string }> {
+  const res = await fetch(`${API_BASE}/providers/${id}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(`Failed to delete provider: ${res.status}`);
+  return res.json();
+}
+
+/** 从 Provider 端点自动获取模型列表。 */
+export async function fetchModelsFromProvider(data: {
+  base_url: string; api_key: string; api_format: string;
+}): Promise<{ status: string; models?: ModelInfo[]; message?: string }> {
+  const res = await fetch(`${API_BASE}/providers/fetch-models`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error(`Failed to fetch models: ${res.status}`);
+  return res.json();
+}
+
+/** 向 Provider 添加模型。 */
+export async function addModelToProvider(providerId: string, model: ModelInfo): Promise<{ status: string; message?: string }> {
+  const res = await fetch(`${API_BASE}/providers/${providerId}/models`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(model),
+  });
+  if (!res.ok) throw new Error(`Failed to add model: ${res.status}`);
+  return res.json();
+}
+
+/** 删除 Provider 中的模型。 */
+export async function removeModelFromProvider(providerId: string, modelId: string): Promise<{ status: string }> {
+  const res = await fetch(`${API_BASE}/providers/${providerId}/models/${encodeURIComponent(modelId)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(`Failed to remove model: ${res.status}`);
+  return res.json();
+}
+
+/** 设置当前活跃模型。 */
+export async function setActiveModel(providerId: string, modelId: string): Promise<{ status: string }> {
+  const res = await fetch(`${API_BASE}/providers/${providerId}/models/${encodeURIComponent(modelId)}/set-active`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error(`Failed to set active model: ${res.status}`);
+  return res.json();
+}
+
+/** 设置 Provider 为活跃。 */
+export async function setActiveProvider(providerId: string): Promise<{ status: string }> {
+  const res = await fetch(`${API_BASE}/providers/${providerId}/set-active`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error(`Failed to set active provider: ${res.status}`);
+  return res.json();
+}
+
+// ---- 上下文管理 ----
+
+export interface ContextStats {
+  total_tokens: number;
+  max_tokens: number;
+  usage_percent: number;
+  message_count: number;
+  system_tokens: number;
+  messages_tokens: number;
+}
+
+export interface CompressionResult {
+  before_tokens: number;
+  after_tokens: number;
+  freed_percent: number;
+  summary: string;
+  compressed_count: number;
+  kept_count: number;
+}
+
+/** 获取会话的上下文 Token 使用统计。 */
+export async function getContextStats(sessionId: string): Promise<ContextStats> {
+  const res = await fetch(`${API_BASE}/session/${sessionId}/context-stats`);
+  if (!res.ok) throw new Error(`Failed to get context stats: ${res.status}`);
+  return res.json();
+}
+
+/** 手动触发会话上下文压缩。 */
+export async function compressContext(
+  sessionId: string,
+  keepRecentTurns?: number
+): Promise<CompressionResult> {
+  const res = await fetch(`${API_BASE}/session/${sessionId}/compress`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ keep_recent_turns: keepRecentTurns ?? 5 }),
+  });
+  if (!res.ok) throw new Error(`Failed to compress context: ${res.status}`);
   return res.json();
 }

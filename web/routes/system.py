@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from assistant.tools.workspace import get_workspace_root, set_workspace_root
 from web.llm import get_default_provider_name, list_providers
+from web.llm.registry import PROVIDER_CATALOG
 
 router = APIRouter()
 
@@ -27,6 +28,16 @@ async def providers():
         "default": get_default_provider_name(),
         "providers": list_providers(),
     }
+
+
+# ---------------------------------------------------------------------------
+# Provider 目录
+# ---------------------------------------------------------------------------
+
+@router.get("/providers/catalog")
+async def get_provider_catalog():
+    """返回支持的 Provider 列表（含默认 base_url 和推荐 model）。"""
+    return {"catalog": PROVIDER_CATALOG}
 
 
 # ---------------------------------------------------------------------------
