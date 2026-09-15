@@ -13,7 +13,7 @@ workSpace/
 flowchart.html
 assistant/prompts/system_prompt.md
 agents.md
-
+tests/
 
 # Desktop (Electron)
 desktop/node_modules/
